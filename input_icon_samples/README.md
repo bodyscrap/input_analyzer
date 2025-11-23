@@ -1,0 +1,15 @@
+|ファイル名|説明|
+|:-|:-|
+|dir_1.png|左下入力|
+|dir_2.png|下入力|
+|dir_3.png|右下入力|
+|dir_4.png|左入力|
+|dir_6.png|右入力|
+|dir_7.png|左上入力|
+|dir_8.png|上入力|
+|dir_9.png|右上入力|
+|btn_a1.png|A1ボタン入力|
+|btn_a2.png|A2ボタン入力|
+|btn_b.png|Bボタン入力|
+|btn_w.png|Wボタン入力|
+|btn_start.png|Startボタン入力|

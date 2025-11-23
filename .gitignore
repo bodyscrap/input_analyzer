@@ -1,0 +1,253 @@
+# Rust
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# ビルド成果物
+/release/
+/debug/
+
+# ==================================================
+# 大容量データファイル
+# ==================================================
+
+# モデルファイル（学習済みweightなど）
+/models/
+*.mpk
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.bin
+*.onnx
+*.h5
+*.pb
+
+# 抽出されたセル画像（大量の小画像）
+/input_cells/
+/input_cells_*/
+/input_cells_all/
+/input_cells_backup*/
+
+# トレーニングデータ
+/training_data/
+/training_data_*/
+/training_data_backup*/
+/training_data_iter*/
+
+# テンプレート画像
+/templates/
+/templates_*/
+
+# 出力ディレクトリ
+/output/
+/output_*/
+/test_output/
+/temp_*/
+/debug/
+/debug_*/
+
+# ==================================================
+# 動画ファイル
+# ==================================================
+
+# サンプルデータ（動画）
+/sample_data/*.mp4
+/sample_data/*.avi
+/sample_data/*.mov
+/sample_data/*.mkv
+/sample_data/*.webm
+/sample_data/*.flv
+/sample_data/*.m4v
+/sample_data/*.3gp
+
+# すべての動画ファイル
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.webm
+*.flv
+*.m4v
+*.3gp
+*.wmv
+*.mpg
+*.mpeg
+
+# ==================================================
+# 画像ファイル
+# ==================================================
+
+# 一般的な画像ファイル
+*.png
+*.jpg
+*.jpeg
+*.bmp
+*.gif
+*.tiff
+*.tif
+*.webp
+*.ico
+*.svg
+
+# ただし、サンプルアイコンは管理対象とする
+!/input_icon_samples/
+!/input_icon_samples/**/*.png
+!/input_icon_samples/**/*.jpg
+
+# READMEに含まれる画像も管理対象
+!/docs/**/*.png
+!/docs/**/*.jpg
+!/.github/**/*.png
+!/.github/**/*.jpg
+
+# ==================================================
+# ログとレポート
+# ==================================================
+
+# ログファイル
+*.log
+*.log.*
+
+# HTMLレポート
+*_inspect.html
+*_report.html
+
+# 実験ログ
+experiment.log
+/models/experiment.log
+
+# ==================================================
+# 一時ファイル・バックアップ
+# ==================================================
+
+# 一時ファイル
+*.tmp
+*.temp
+*~
+.*.swp
+.*.swo
+.*.swn
+
+# バックアップファイル
+*.bak
+*.backup
+*_backup
+*_backup_*/
+backup_*/
+
+# ==================================================
+# エディタ・IDE
+# ==================================================
+
+# Visual Studio Code
+.vscode/
+*.code-workspace
+
+# IntelliJ IDEA / CLion
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# Vim
+*.swp
+*.swo
+*.swn
+*~
+
+# Emacs
+*~
+\#*\#
+.\#*
+
+# Visual Studio
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# ==================================================
+# OS固有
+# ==================================================
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# Linux
+*~
+.directory
+.Trash-*
+
+# ==================================================
+# Python関連（削除済みだが念のため）
+# ==================================================
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg-info/
+dist/
+build/
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+*.ipynb
+
+# ==================================================
+# その他
+# ==================================================
+
+# CSV出力（必要に応じてコメントアウト解除）
+# *.csv
+
+# 環境変数ファイル
+.env
+.env.local
+.env.*.local
+
+# データベース
+*.db
+*.sqlite
+*.sqlite3
+
+# 圧縮ファイル
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.rar
+*.7z
+
+# キャッシュ
+.cache/
+*.cache
+
+# READMEファイルは管理対象として残す
+!README.md
+!*/README.md

@@ -1,0 +1,76 @@
+[package]
+name = "input_analyzer"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "input_analyzer"
+path = "src/lib.rs"
+
+[[bin]]
+name = "input_analyzer"
+path = "src/main.rs"
+
+[[bin]]
+name = "analyze_input"
+path = "src/bin/analyze_input.rs"
+
+[[bin]]
+name = "analyze_input_custom"
+path = "src/bin/analyze_input_custom.rs"
+
+[[bin]]
+name = "extract_all_cells"
+path = "src/bin/extract_all_cells.rs"
+
+[[bin]]
+name = "prepare_templates"
+path = "src/bin/prepare_templates.rs"
+
+[[bin]]
+name = "collect_training_data"
+path = "src/bin/collect_training_data.rs"
+
+[[bin]]
+name = "inspect_training_data"
+path = "src/bin/inspect_training_data.rs"
+
+[[bin]]
+name = "train_model"
+path = "src/bin/train_model.rs"
+
+[[bin]]
+name = "supplement_training_data"
+path = "src/bin/supplement_training_data.rs"
+
+[[bin]]
+name = "trim_category"
+path = "src/bin/trim_category.rs"
+
+[[bin]]
+name = "collect_with_model"
+path = "src/bin/collect_with_model.rs"
+
+[dependencies]
+anyhow = "1.0"
+image = "0.25"
+gstreamer = "0.23"
+gstreamer-app = "0.23"
+gstreamer-video = "0.23"
+gstreamer-pbutils = "0.23"
+walkdir = "2.4"
+rand = "0.8"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Burn機械学習フレームワーク（オプション機能）
+# 最新版 0.19.1を使用
+burn = { version = "0.19.1", features = ["train", "wgpu"], optional = true }
+burn-ndarray = { version = "0.19.1", optional = true }
+burn-wgpu = { version = "0.19.1", optional = true }
+burn-autodiff = { version = "0.19.1", optional = true }
+burn-dataset = { version = "0.19.1", optional = true }
+
+[features]
+default = []
+ml = ["burn", "burn-ndarray", "burn-wgpu", "burn-autodiff", "burn-dataset"]
