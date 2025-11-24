@@ -18,6 +18,14 @@ use std::path::PathBuf;
 #[cfg(all(feature = "gui", feature = "ml"))]
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 
+// デバッグビルド時のみログ用インポート
+#[cfg(all(feature = "gui", feature = "ml", debug_assertions))]
+use std::fs::File;
+#[cfg(all(feature = "gui", feature = "ml", debug_assertions))]
+use std::io::Write;
+#[cfg(all(feature = "gui", feature = "ml", debug_assertions))]
+use chrono::Local;
+
 #[cfg(all(feature = "gui", feature = "ml"))]
 use burn::{
     module::Module,
@@ -115,12 +123,16 @@ struct InputEditorApp {
     records: Vec<InputRecord>,
     current_file: Option<PathBuf>,
     selected_row: Option<usize>,
+    selected_rows: std::collections::HashSet<usize>,
+    clipboard: Vec<InputRecord>,
+    clipboard_marker: Option<usize>,
     status_message: String,
     backend_type: BackendType,
-    model_path: PathBuf,
+    model_path: Option<PathBuf>,
     max_video_duration_secs: u64,
     extraction_progress: Option<(usize, usize)>,
     show_duration_warning: bool,
+    show_model_warning: bool,
     extraction_receiver: Option<std::sync::mpsc::Receiver<ExtractionResult>>,
     cancel_flag: Option<Arc<AtomicBool>>,
 }
@@ -132,14 +144,18 @@ impl Default for InputEditorApp {
             records: Vec::new(),
             current_file: None,
             selected_row: None,
-            status_message: "ファイルを開いてください".to_string(),
+            status_message: "モデルファイルを選択してください".to_string(),
             backend_type: BackendType::Gpu,
-            model_path: PathBuf::from("models/model.mpk"),
+            model_path: None,
             max_video_duration_secs: 120, // デフォルト2分
             extraction_progress: None,
             show_duration_warning: false,
+            show_model_warning: false,
             extraction_receiver: None,
             cancel_flag: None,
+            selected_rows: std::collections::HashSet::new(),
+            clipboard: Vec::new(),
+            clipboard_marker: None,
         }
     }
 }
@@ -162,6 +178,8 @@ impl InputEditorApp {
 
         self.records = records;
         self.current_file = Some(path.clone());
+        self.selected_row = None;
+        self.selected_rows.clear();
         self.status_message = format!("読み込み完了: {} ({} レコード)", path.display(), self.records.len());
         Ok(())
     }
@@ -181,13 +199,20 @@ impl InputEditorApp {
 
     fn add_record(&mut self, index: Option<usize>) {
         let new_record = InputRecord::new();
-        if let Some(idx) = index {
-            self.records.insert(idx + 1, new_record);
-            self.selected_row = Some(idx + 1);
+        // 複数行選択時は一番下の選択行の下に追加
+        let insert_idx = if !self.selected_rows.is_empty() {
+            let max_idx = *self.selected_rows.iter().max().unwrap();
+            max_idx + 1
+        } else if let Some(idx) = index {
+            idx + 1
         } else {
-            self.records.push(new_record);
-            self.selected_row = Some(self.records.len() - 1);
-        }
+            self.records.len()
+        };
+        
+        self.records.insert(insert_idx, new_record);
+        self.selected_row = Some(insert_idx);
+        self.selected_rows.clear();
+        self.selected_rows.insert(insert_idx);
         self.status_message = "新しいレコードを追加しました".to_string();
     }
 
@@ -203,14 +228,130 @@ impl InputEditorApp {
         }
     }
     
+    fn delete_selected(&mut self) {
+        if self.selected_rows.is_empty() {
+            self.status_message = "削除する行を選択してください".to_string();
+            return;
+        }
+        
+        if self.records.len() - self.selected_rows.len() < 1 {
+            self.status_message = "最低1行は残す必要があります".to_string();
+            return;
+        }
+        
+        let mut indices: Vec<usize> = self.selected_rows.iter().copied().collect();
+        indices.sort();
+        indices.reverse();
+        
+        let count = indices.len();
+        
+        for idx in indices {
+            if idx < self.records.len() {
+                self.records.remove(idx);
+            }
+        }
+        
+        self.selected_rows.clear();
+        self.selected_row = None;
+        self.status_message = format!("{}行を削除しました", count);
+    }
+    
     fn new_document(&mut self) {
         self.records = vec![InputRecord::new()];
         self.current_file = None;
         self.selected_row = None;
+        self.selected_rows.clear();
         self.status_message = "新規作成しました".to_string();
+    }
+    
+    fn copy_selected(&mut self) {
+        if self.selected_rows.is_empty() {
+            self.status_message = "コピーする行を選択してください".to_string();
+            return;
+        }
+        
+        let mut indices: Vec<usize> = self.selected_rows.iter().copied().collect();
+        indices.sort();
+        
+        self.clipboard.clear();
+        for &idx in &indices {
+            if idx < self.records.len() {
+                self.clipboard.push(self.records[idx].clone());
+            }
+        }
+        
+        // 内部クリップボードのマーカーを保存（次回のupdateでシステムクリップボードに書き込む）
+        self.clipboard_marker = Some(self.clipboard.len());
+        
+        self.status_message = format!("{}行をコピーしました", self.clipboard.len());
+    }
+    
+    fn cut_selected(&mut self) {
+        if self.selected_rows.is_empty() {
+            self.status_message = "切り取る行を選択してください".to_string();
+            return;
+        }
+        
+        if self.records.len() - self.selected_rows.len() < 1 {
+            self.status_message = "最低1行は残す必要があります".to_string();
+            return;
+        }
+        
+        let mut indices: Vec<usize> = self.selected_rows.iter().copied().collect();
+        indices.sort();
+        
+        self.clipboard.clear();
+        for &idx in &indices {
+            if idx < self.records.len() {
+                self.clipboard.push(self.records[idx].clone());
+            }
+        }
+        
+        // 逆順で削除
+        for &idx in indices.iter().rev() {
+            if idx < self.records.len() {
+                self.records.remove(idx);
+            }
+        }
+        
+        // 内部クリップボードのマーカーを保存
+        self.clipboard_marker = Some(self.clipboard.len());
+        
+        self.selected_rows.clear();
+        self.selected_row = None;
+        self.status_message = format!("{}行を切り取りました", self.clipboard.len());
+    }
+    
+    fn paste(&mut self) {
+        if self.clipboard.is_empty() {
+            self.status_message = "クリップボードが空です".to_string();
+            return;
+        }
+        
+        let insert_pos = self.selected_row.map(|r| r + 1).unwrap_or(self.records.len());
+        
+        for (i, record) in self.clipboard.iter().enumerate() {
+            self.records.insert(insert_pos + i, record.clone());
+        }
+        
+        self.status_message = format!("{}行を貼り付けました", self.clipboard.len());
+    }
+    
+    fn select_all(&mut self) {
+        self.selected_rows.clear();
+        for i in 0..self.records.len() {
+            self.selected_rows.insert(i);
+        }
+        self.status_message = format!("全{}行を選択しました", self.records.len());
     }
 
     fn extract_from_video(&mut self, video_path: PathBuf) -> Result<(), String> {
+        // モデルが選択されているかチェック
+        if self.model_path.is_none() {
+            self.show_model_warning = true;
+            return Err("モデルファイルを選択してください（設定メニュー）".to_string());
+        }
+        
         // 動画の長さをチェック
         let duration_secs = self.get_video_duration(&video_path)?;
         if duration_secs > self.max_video_duration_secs {
@@ -233,7 +374,7 @@ impl InputEditorApp {
         self.extraction_receiver = Some(rx);
         
         let backend_type = self.backend_type;
-        let model_path = self.model_path.clone();
+        let model_path = self.model_path.clone().unwrap();
         
         // バックグラウンドスレッドで抽出処理を実行
         std::thread::spawn(move || {
@@ -433,6 +574,8 @@ impl eframe::App for InputEditorApp {
                         self.extraction_progress = None;
                         self.extraction_receiver = None;
                         self.cancel_flag = None;
+                        self.selected_row = None;
+                        self.selected_rows.clear();
                         self.status_message = format!("抽出完了: {} レコード", self.records.len());
                     }
                     ExtractionResult::Error(e) => {
@@ -443,6 +586,49 @@ impl eframe::App for InputEditorApp {
                     }
                 }
             }
+        }
+        
+        // キーボードショートカット
+        let wants_keyboard = ctx.wants_keyboard_input();
+        
+        // Copy/Cut/Pasteイベントを処理
+        let events = ctx.input(|i| i.events.clone());
+        
+        if !wants_keyboard {
+            // フォーカスがない場合のみアプリケーションのショートカットを有効化
+            for event in &events {
+                match event {
+                    egui::Event::Copy => {
+                        self.copy_selected();
+                    }
+                    egui::Event::Cut => {
+                        self.cut_selected();
+                    }
+                    egui::Event::Paste(_) => {
+                        self.paste();
+                    }
+                    egui::Event::Key { key, pressed, modifiers, .. } => {
+                        if *pressed {
+                            // Ctrl+A (Select All)
+                            if *key == egui::Key::A && modifiers.ctrl && !modifiers.shift && !modifiers.alt {
+                                self.select_all();
+                            }
+                            // Delete
+                            else if *key == egui::Key::Delete && !modifiers.ctrl && !modifiers.shift && !modifiers.alt {
+                                self.delete_selected();
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        
+        // clipboard_markerが設定されていたらシステムクリップボードに書き込む
+        if let Some(count) = self.clipboard_marker.take() {
+            ctx.output_mut(|o| {
+                o.copied_text = format!("__INTERNAL_CLIPBOARD__{}", count);
+            });
         }
         
         egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
@@ -520,23 +706,45 @@ impl eframe::App for InputEditorApp {
                 });
 
                 ui.menu_button("編集", |ui| {
+                    if ui.button("コピー (Ctrl+C)").clicked() {
+                        self.copy_selected();
+                        ui.close_menu();
+                    }
+                    
+                    if ui.button("切り取り (Ctrl+X)").clicked() {
+                        self.cut_selected();
+                        ui.close_menu();
+                    }
+                    
+                    if ui.button("貼り付け (Ctrl+V)").clicked() {
+                        self.paste();
+                        ui.close_menu();
+                    }
+                    
+                    ui.separator();
+                    
+                    if ui.button("すべて選択 (Ctrl+A)").clicked() {
+                        self.select_all();
+                        ui.close_menu();
+                    }
+                    
+                    ui.separator();
+                    
                     if ui.button("新規レコード追加").clicked() {
                         self.add_record(self.selected_row);
                         ui.close_menu();
                     }
 
-                    let can_delete = self.records.len() > 1;
+                    let can_delete = self.records.len() > 1 && (
+                        self.records.len() - self.selected_rows.len() >= 1
+                    );
                     ui.add_enabled_ui(can_delete, |ui| {
-                        if ui.button("選択レコード削除").clicked() {
-                            if let Some(idx) = self.selected_row {
-                                self.delete_record(idx);
-                            } else {
-                                self.status_message = "削除するレコードを選択してください".to_string();
-                            }
+                        if ui.button("選択レコード削除 (Del)").clicked() {
+                            self.delete_selected();
                             ui.close_menu();
                         }
                     });
-                    if !can_delete {
+                    if !can_delete && self.records.len() <= 1 {
                         ui.label("（最低1行必要）");
                     }
                 });
@@ -549,17 +757,22 @@ impl eframe::App for InputEditorApp {
                     ui.separator();
                     
                     ui.horizontal(|ui| {
-                        ui.label("モデルパス:");
-                        if ui.button("参照...").clicked() {
+                        ui.label("モデルファイル:");
+                        if ui.button("選択...").clicked() {
                             if let Some(path) = rfd::FileDialog::new()
                                 .add_filter("モデル", &["mpk"])
                                 .pick_file()
                             {
-                                self.model_path = path;
+                                self.model_path = Some(path);
+                                self.status_message = "モデルを読み込みました".to_string();
                             }
                         }
                     });
-                    ui.label(format!("現在: {}", self.model_path.display()));
+                    if let Some(ref path) = self.model_path {
+                        ui.label(format!("現在: {}", path.display()));
+                    } else {
+                        ui.colored_label(egui::Color32::RED, "未選択（動画抽出不可）");
+                    }
                     
                     ui.separator();
                     
@@ -592,7 +805,33 @@ impl eframe::App for InputEditorApp {
             });
         });
 
-        // 警告ダイアログ
+        // モデル未選択警告ダイアログ
+        if self.show_model_warning {
+            egui::Window::new("警告")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.add_space(10.0);
+                        ui.label(egui::RichText::new("⚠ モデルファイルが選択されていません")
+                            .size(16.0)
+                            .color(egui::Color32::from_rgb(255, 150, 0)));
+                        ui.add_space(10.0);
+                        ui.label("動画から入力履歴を抽出するには、");
+                        ui.label("機械学習モデルファイルを選択する必要があります。");
+                        ui.add_space(10.0);
+                        ui.label("「設定」メニュー → 「モデルファイルを選択」");
+                        ui.label("からモデルファイルを指定してください。");
+                        ui.add_space(15.0);
+                        if ui.button("OK").clicked() {
+                            self.show_model_warning = false;
+                        }
+                    });
+                });
+        }
+        
+        // 動画長すぎ警告ダイアログ
         if self.show_duration_warning {
             egui::Window::new("警告")
                 .collapsible(false)
@@ -693,9 +932,31 @@ impl eframe::App for InputEditorApp {
                         let can_delete = total_records > 1;
                         
                         for (i, record) in self.records.iter_mut().enumerate() {
-                            let is_selected = self.selected_row == Some(i);
+                            let is_selected = self.selected_rows.contains(&i);
 
-                            if ui.selectable_label(is_selected, format!("{}", i + 1)).clicked() {
+                            let response = ui.selectable_label(is_selected, format!("{}", i + 1));
+                            
+                            if response.clicked() {
+                                let modifiers = ui.input(|i| i.modifiers);
+                                if modifiers.ctrl {
+                                    // Ctrl+クリック: トグル選択
+                                    if self.selected_rows.contains(&i) {
+                                        self.selected_rows.remove(&i);
+                                    } else {
+                                        self.selected_rows.insert(i);
+                                    }
+                                } else if modifiers.shift && self.selected_row.is_some() {
+                                    // Shift+クリック: 範囲選択
+                                    let start = self.selected_row.unwrap().min(i);
+                                    let end = self.selected_row.unwrap().max(i);
+                                    for idx in start..=end {
+                                        self.selected_rows.insert(idx);
+                                    }
+                                } else {
+                                    // 通常クリック: 単一選択
+                                    self.selected_rows.clear();
+                                    self.selected_rows.insert(i);
+                                }
                                 self.selected_row = Some(i);
                             }
 
@@ -751,6 +1012,24 @@ impl eframe::App for InputEditorApp {
 
 #[cfg(all(feature = "gui", feature = "ml"))]
 fn main() -> eframe::Result<()> {
+    // デバッグビルド時のみログを有効化
+    #[cfg(debug_assertions)]
+    {
+        let log_file = File::create("input_editor_debug.log")
+            .expect("ログファイルの作成に失敗しました");
+        
+        env_logger::Builder::new()
+            .target(env_logger::Target::Pipe(Box::new(log_file)))
+            .filter_level(log::LevelFilter::Debug)
+            .format(|buf, record| {
+                writeln!(buf, "[{}] {}: {}",
+                    Local::now().format("%Y-%m-%d %H:%M:%S%.3f"),
+                    record.level(),
+                    record.args())
+            })
+            .init();
+    }
+    
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1200.0, 800.0])
