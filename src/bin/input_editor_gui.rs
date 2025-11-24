@@ -18,14 +18,6 @@ use std::path::PathBuf;
 #[cfg(all(feature = "gui", feature = "ml"))]
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 
-// デバッグビルド時のみログ用インポート
-#[cfg(all(feature = "gui", feature = "ml", debug_assertions))]
-use std::fs::File;
-#[cfg(all(feature = "gui", feature = "ml", debug_assertions))]
-use std::io::Write;
-#[cfg(all(feature = "gui", feature = "ml", debug_assertions))]
-use chrono::Local;
-
 #[cfg(all(feature = "gui", feature = "ml"))]
 use burn::{
     module::Module,
@@ -1012,27 +1004,9 @@ impl eframe::App for InputEditorApp {
 
 #[cfg(all(feature = "gui", feature = "ml"))]
 fn main() -> eframe::Result<()> {
-    // デバッグビルド時のみログを有効化
-    #[cfg(debug_assertions)]
-    {
-        let log_file = File::create("input_editor_debug.log")
-            .expect("ログファイルの作成に失敗しました");
-        
-        env_logger::Builder::new()
-            .target(env_logger::Target::Pipe(Box::new(log_file)))
-            .filter_level(log::LevelFilter::Debug)
-            .format(|buf, record| {
-                writeln!(buf, "[{}] {}: {}",
-                    Local::now().format("%Y-%m-%d %H:%M:%S%.3f"),
-                    record.level(),
-                    record.args())
-            })
-            .init();
-    }
-    
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1200.0, 800.0])
+            .with_inner_size([720.0, 800.0])
             .with_title("サイバーボッツ入力履歴エディタ"),
         ..Default::default()
     };
