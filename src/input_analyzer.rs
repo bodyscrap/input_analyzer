@@ -6,6 +6,7 @@ use std::io::BufWriter;
 use std::path::Path;
 
 /// PNG画像を非圧縮で保存（DynamicImage用）
+#[allow(dead_code)]
 fn save_png_uncompressed(img: &DynamicImage, path: &Path) -> Result<()> {
     let file = File::create(path)
         .with_context(|| format!("ファイルの作成に失敗: {}", path.display()))?;

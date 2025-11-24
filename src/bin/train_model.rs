@@ -151,52 +151,62 @@ impl<B: Backend> IconBatcher<B> {
 impl<B: Backend> burn::data::dataloader::batcher::Batcher<B, IconItem, IconBatch<B>>
     for IconBatcher<B>
 {
-    fn batch(&self, items: Vec<IconItem>, device: &B::Device) -> IconBatch<B> {
+    fn batch(&self, items: Vec<IconItem>, _device: &B::Device) -> IconBatch<B> {
         let batch_size = items.len();
 
-        // バッチ生成時に画像を読み込む（メモリ効率的）
-        let mut images_vec = Vec::with_capacity(batch_size * 3 * IMAGE_SIZE * IMAGE_SIZE);
+        // 各画像を個別に処理してテンソルを作成
+        let mut batch_images = Vec::with_capacity(batch_size);
         let mut targets_vec = Vec::with_capacity(batch_size);
 
         for item in items {
-            // 画像をロード
+            // 画像をロードして即座にTensorに変換
             match load_and_normalize_image(&item.path) {
                 Ok(image_data) => {
-                    images_vec.extend(image_data);
+                    // 即座にTensorに変換(CPUメモリからGPUメモリへ)
+                    let image_tensor = Tensor::<B, 1>::from_floats(image_data.as_slice(), &self.device)
+                        .reshape([1, 3, IMAGE_SIZE, IMAGE_SIZE]);
+                    batch_images.push(image_tensor);
                     targets_vec.push(item.label as i64);
+                    // image_dataはここでドロップされる
                 }
                 Err(e) => {
                     eprintln!("警告: 画像読み込み失敗 {}: {}", item.path.display(), e);
-                    // エラーの場合はゼロで埋める（またはスキップ）
-                    images_vec.extend(vec![0.0; 3 * IMAGE_SIZE * IMAGE_SIZE]);
+                    // エラーの場合はゼロテンソルを作成
+                    let zero_tensor = Tensor::<B, 4>::zeros([1, 3, IMAGE_SIZE, IMAGE_SIZE], &self.device);
+                    batch_images.push(zero_tensor);
                     targets_vec.push(item.label as i64);
                 }
             }
         }
 
-        // Tensorを作成してreshape [Batch, Channel, Height, Width]
-        let images = Tensor::<B, 1>::from_floats(images_vec.as_slice(), device)
-            .reshape([batch_size, 3, IMAGE_SIZE, IMAGE_SIZE]);
+        // バッチテンソルを結合
+        let images = Tensor::cat(batch_images, 0);
+        let targets = Tensor::<B, 1, Int>::from_ints(targets_vec.as_slice(), &self.device);
 
-        let targets = Tensor::<B, 1, Int>::from_ints(targets_vec.as_slice(), device);
+        // batch_imagesとtargets_vecは既に消費されているため、dropは不要
 
         IconBatch { images, targets }
-        // ← ここでimages_vecとtargets_vecは自動的にドロップされる
     }
 }
 
 #[cfg(feature = "ml")]
 impl<B: AutodiffBackend> TrainStep<IconBatch<B>, ClassificationOutput<B>> for IconClassifier<B> {
     fn step(&self, batch: IconBatch<B>) -> TrainOutput<ClassificationOutput<B>> {
-        let item = self.forward_classification(batch.images, batch.targets);
-        TrainOutput::new(self, item.loss.backward(), item)
+        let images = batch.images;
+        let targets = batch.targets;
+        let item = self.forward_classification(images, targets);
+        let grads = item.loss.backward();
+        let output = TrainOutput::new(self, grads, item);
+        output
     }
 }
 
 #[cfg(feature = "ml")]
 impl<B: Backend> ValidStep<IconBatch<B>, ClassificationOutput<B>> for IconClassifier<B> {
     fn step(&self, batch: IconBatch<B>) -> ClassificationOutput<B> {
-        self.forward_classification(batch.images, batch.targets)
+        let images = batch.images;
+        let targets = batch.targets;
+        self.forward_classification(images, targets)
     }
 }
 
@@ -207,13 +217,13 @@ pub struct TrainingConfig {
     pub optimizer: AdamConfig,
     #[config(default = 50)]
     pub num_epochs: usize,
-    #[config(default = 32)]
+    #[config(default = 8)]
     pub batch_size: usize,
-    #[config(default = 2)]
+    #[config(default = 1)]
     pub num_workers: usize,
     #[config(default = 42)]
     pub seed: u64,
-    #[config(default = 1.0e-3)]
+    #[config(default = 1.0e-4)]
     pub learning_rate: f64,
 }
 
@@ -225,7 +235,7 @@ fn create_artifact_dir(artifact_dir: &str) {
 }
 
 #[cfg(feature = "ml")]
-pub fn train<B: AutodiffBackend>(
+fn train<B: AutodiffBackend>(
     artifact_dir: &str,
     config: TrainingConfig,
     device: B::Device,
@@ -286,52 +296,35 @@ pub fn train<B: AutodiffBackend>(
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
 
-    if args.len() < 2 {
-        eprintln!("================================================================================");
-        eprintln!("アイコン分類モデル学習 (Burn 0.19.1)");
-        eprintln!("================================================================================");
-        eprintln!();
-        eprintln!("使用方法:");
-        eprintln!("  train_model <トレーニングデータディレクトリ> [エポック数] [バッチサイズ]");
-        eprintln!();
-        eprintln!("引数:");
-        eprintln!("  <トレーニングデータディレクトリ> : training_data ディレクトリ (必須)");
-        eprintln!("  [エポック数]                    : 学習エポック数 (デフォルト: 50)");
-        eprintln!("  [バッチサイズ]                  : バッチサイズ (デフォルト: 32)");
-        eprintln!();
-        eprintln!("例:");
-        eprintln!("  cargo run --bin train_model --features ml --release -- training_data");
-        eprintln!("  cargo run --bin train_model --features ml --release -- training_data 30 16");
-        eprintln!();
-        eprintln!("注意: 現在はCPUバックエンド(NdArray)を使用します");
-        eprintln!("      GPUを使用する場合はソースコードでWGPUバックエンドに切り替えてください");
-        eprintln!();
-        std::process::exit(1);
-    }
-
-    let data_dir = PathBuf::from(&args[1]);
+    // デフォルト値を設定
+    let data_dir = if args.len() >= 2 {
+        PathBuf::from(&args[1])
+    } else {
+        PathBuf::from("training_data")
+    };
     let num_epochs = if args.len() >= 3 {
         args[2].parse().unwrap_or(50)
     } else {
         50
     };
     let batch_size = if args.len() >= 4 {
-        args[3].parse().unwrap_or(32)
+        args[3].parse().unwrap_or(8)
     } else {
-        32
+        8
     };
 
     println!("================================================================================");
     println!("アイコン分類モデル学習 (Burn + WGPU/GPU)");
     println!("================================================================================");
+    println!("\nデータディレクトリ: {}", data_dir.display());
 
     // デバイス設定（WGPU/GPU）
     let device = burn_wgpu::WgpuDevice::default();
-    println!("\n使用デバイス: {:?}", device);
+    println!("使用デバイス: {:?}", device);
 
     // CPUの場合はこちらを使用:
     // let device = burn_ndarray::NdArrayDevice::Cpu;
-    // println!("\n使用デバイス: CPU (NdArray)");
+    // println!("使用デバイス: CPU (NdArray)");
 
     // データセット読み込み
     let dataset = IconDataset::load(&data_dir)?;

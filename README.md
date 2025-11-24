@@ -168,6 +168,39 @@ cargo run --bin analyze_input_custom -- output/frames/frame_000630.png 216 189 3
 - `output/analysis/*_indicator_region.png` - 抽出された入力インジケータ領域
 - `output/analysis/*_input_rows/` - 各行・各列のセル画像
 
+### 5. 分類精度テスト（機械学習モデル使用）
+
+学習済みモデルで動画から入力アイコンを分類し、クラスごとに振り分けます。
+
+```bash
+# デフォルト設定で実行（sample_data配下の動画を3フレームごとに処理）
+cargo run --release --features ml --bin test_classification
+
+# カスタム設定で実行
+cargo run --release --features ml --bin test_classification -- <動画ディレクトリ> <フレーム間隔> <モデルパス> <出力ディレクトリ>
+
+# 例：60フレームごとに処理
+cargo run --release --features ml --bin test_classification -- sample_data 60 models/model.mpk test_results
+```
+
+出力構造：
+```
+test_results/
+├── input_sample_01/
+│   ├── btn_a1/
+│   │   ├── frame_000000_0_conf0.952.png
+│   │   └── ...
+│   ├── btn_a2/
+│   ├── dir_6/
+│   ├── empty/
+│   └── ...
+├── input_sample_02/
+│   └── ...
+└── ...
+```
+
+各ファイル名には信頼度スコアが含まれます（例：`conf0.952` = 95.2%）
+
 ### プログラムのカスタマイズ
 
 `src/main.rs` のコードを編集することで、以下の設定を変更できます：
@@ -313,7 +346,7 @@ Error: decodebinの作成に失敗しました
 - **セルサイズ**: 48×48ピクセル
 
 ### 列の意味
-- **1列目**: フレームカウント（0-99、ループ）
+- **1列目**: フレームカウント（0-255、初期値1、255を超えると0に戻る）
 - **2～7列目**: 入力アイコン（最大6個）
 
 ### 入力の優先度
