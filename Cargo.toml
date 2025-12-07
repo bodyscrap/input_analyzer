@@ -31,6 +31,10 @@ path = "src/bin/test_classification.rs"
 name = "merge_test_results"
 path = "src/bin/merge_test_results.rs"
 
+[[bin]]
+name = "create_default_config"
+path = "src/bin/create_default_config.rs"
+
 [dependencies]
 anyhow = "1.0"
 image = "0.25"

@@ -50,11 +50,11 @@ pub fn update_input_state(state: &mut InputState, class_name: &str) {
         "dir_7" => state.direction = 7,
         "dir_8" => state.direction = 8,
         "dir_9" => state.direction = 9,
-        "btn_a1" => state.btn_a1 = 1,
-        "btn_a2" => state.btn_a2 = 1,
-        "btn_b" => state.btn_b = 1,
-        "btn_w" => state.btn_w = 1,
-        "btn_start" => state.btn_start = 1,
+        "A1" => state.btn_a1 = 1,
+        "A2" => state.btn_a2 = 1,
+        "B" => state.btn_b = 1,
+        "W" => state.btn_w = 1,
+        "Start" => state.btn_start = 1,
         "empty" => {} // 何もしない
         _ => eprintln!("警告: 未知のクラス名: {}", class_name),
     }

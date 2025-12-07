@@ -25,10 +25,14 @@ pub const NUM_CLASSES: usize = 14;
 pub const IMAGE_SIZE: usize = 48;
 
 /// クラス名の定義
-#[cfg(feature = "ml")]
 pub const CLASS_NAMES: [&str; NUM_CLASSES] = [
-    "btn_a1", "btn_a2", "btn_b", "btn_start", "btn_w", "dir_1", "dir_2", "dir_3", "dir_4",
-    "dir_6", "dir_7", "dir_8", "dir_9", "empty",
+    "A1", "A2", "B", "Start", "W", "dir_1", "dir_2", "dir_3", "dir_4",
+    "dir_6", "dir_7", "dir_8", "dir_9", "others",
+];
+
+/// ボタンラベルのみ（方向以外）
+pub const BUTTON_LABELS: [&str; 5] = [
+    "A1", "A2", "B", "W", "Start",
 ];
 
 /// モデル設定

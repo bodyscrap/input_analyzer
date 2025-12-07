@@ -19,8 +19,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 const CLASS_NAMES: [&str; 14] = [
-    "btn_a1", "btn_a2", "btn_b", "btn_start", "btn_w", "dir_1", "dir_2", "dir_3", "dir_4",
-    "dir_6", "dir_7", "dir_8", "dir_9", "empty",
+    "A1", "A2", "B", "Start", "W", "dir_1", "dir_2", "dir_3", "dir_4",
+    "dir_6", "dir_7", "dir_8", "dir_9", "others",
 ];
 
 /// コマンドライン引数

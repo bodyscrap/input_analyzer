@@ -4,6 +4,9 @@
 //! Burn 0.19.1 + AutodiffBackend (WGPU) を使用します。
 
 #[cfg(feature = "ml")]
+use input_analyzer::config::{AppConfig, DeviceType};
+
+#[cfg(feature = "ml")]
 use burn::{
     config::Config,
     data::{dataloader::DataLoaderBuilder, dataset::Dataset},
@@ -19,7 +22,9 @@ use burn::{
 };
 
 #[cfg(feature = "ml")]
-use input_analyzer::ml_model::{IconClassifier, ModelConfig, CLASS_NAMES, IMAGE_SIZE, NUM_CLASSES, load_and_normalize_image};
+use input_analyzer::ml_model::{
+    load_and_normalize_image, IconClassifier, ModelConfig, CLASS_NAMES, IMAGE_SIZE, NUM_CLASSES,
+};
 
 #[cfg(feature = "ml")]
 use rand::seq::SliceRandom;
@@ -37,8 +42,6 @@ type MyAutodiffBackend = burn_autodiff::Autodiff<MyBackend>;
 // type MyBackend = burn_ndarray::NdArray<f32>;
 // #[cfg(feature = "ml")]
 // type MyAutodiffBackend = burn_autodiff::Autodiff<MyBackend>;
-
-
 
 /// データセットアイテム（画像パスのみ保持）
 #[cfg(feature = "ml")]
@@ -105,10 +108,7 @@ impl IconDataset {
         let mut train_items = self.items;
         let val_items = train_items.split_off(train_size);
 
-        (
-            Self { items: train_items },
-            Self { items: val_items },
-        )
+        (Self { items: train_items }, Self { items: val_items })
     }
 }
 
@@ -122,8 +122,6 @@ impl Dataset<IconItem> for IconDataset {
         self.items.len()
     }
 }
-
-
 
 /// バッチデータ
 #[cfg(feature = "ml")]
@@ -163,8 +161,9 @@ impl<B: Backend> burn::data::dataloader::batcher::Batcher<B, IconItem, IconBatch
             match load_and_normalize_image(&item.path) {
                 Ok(image_data) => {
                     // 即座にTensorに変換(CPUメモリからGPUメモリへ)
-                    let image_tensor = Tensor::<B, 1>::from_floats(image_data.as_slice(), &self.device)
-                        .reshape([1, 3, IMAGE_SIZE, IMAGE_SIZE]);
+                    let image_tensor =
+                        Tensor::<B, 1>::from_floats(image_data.as_slice(), &self.device)
+                            .reshape([1, 3, IMAGE_SIZE, IMAGE_SIZE]);
                     batch_images.push(image_tensor);
                     targets_vec.push(item.label as i64);
                     // image_dataはここでドロップされる
@@ -172,7 +171,8 @@ impl<B: Backend> burn::data::dataloader::batcher::Batcher<B, IconItem, IconBatch
                 Err(e) => {
                     eprintln!("警告: 画像読み込み失敗 {}: {}", item.path.display(), e);
                     // エラーの場合はゼロテンソルを作成
-                    let zero_tensor = Tensor::<B, 4>::zeros([1, 3, IMAGE_SIZE, IMAGE_SIZE], &self.device);
+                    let zero_tensor =
+                        Tensor::<B, 4>::zeros([1, 3, IMAGE_SIZE, IMAGE_SIZE], &self.device);
                     batch_images.push(zero_tensor);
                     targets_vec.push(item.label as i64);
                 }
@@ -294,41 +294,68 @@ fn train<B: AutodiffBackend>(
 
 #[cfg(feature = "ml")]
 fn main() -> anyhow::Result<()> {
-    let args: Vec<String> = std::env::args().collect();
+    // 設定ファイルを読み込み（存在しない場合はデフォルト設定）
+    let mut config = AppConfig::load_or_default();
 
-    // デフォルト値を設定
+    // 設定情報を表示
+    config.display();
+
+    let args: Vec<String> = std::env::args().collect();
     let data_dir = if args.len() >= 2 {
         PathBuf::from(&args[1])
     } else {
         PathBuf::from("training_data")
     };
+
+    // コマンドライン引数で上書き可能
     let num_epochs = if args.len() >= 3 {
-        args[2].parse().unwrap_or(50)
+        args[2].parse().unwrap_or(config.training.num_epochs)
     } else {
-        50
-    };
-    let batch_size = if args.len() >= 4 {
-        args[3].parse().unwrap_or(8)
-    } else {
-        8
+        config.training.num_epochs
     };
 
+    let batch_size = if args.len() >= 4 {
+        args[3].parse().unwrap_or(config.training.batch_size)
+    } else {
+        config.training.batch_size
+    };
+
+    // デバイスタイプをコマンドライン引数で指定可能
+    if args.len() >= 5 {
+        match args[4].to_lowercase().as_str() {
+            "cpu" => config.set_device_type(DeviceType::Cpu),
+            "gpu" | "wgpu" => config.set_device_type(DeviceType::Wgpu),
+            _ => println!(
+                "警告: 不明なデバイスタイプ '{}' - 設定ファイルの値を使用します",
+                args[4]
+            ),
+        }
+    }
+
     println!("================================================================================");
-    println!("アイコン分類モデル学習 (Burn + WGPU/GPU)");
+    println!("アイコン分類モデル学習 (Burn)");
     println!("================================================================================");
     println!("\nデータディレクトリ: {}", data_dir.display());
 
-    // デバイス設定（WGPU/GPU）
-    let device = burn_wgpu::WgpuDevice::default();
-    println!("使用デバイス: {:?}", device);
-
-    // CPUの場合はこちらを使用:
-    // let device = burn_ndarray::NdArrayDevice::Cpu;
-    // println!("使用デバイス: CPU (NdArray)");
+    // デバイス設定（設定ファイルの値を使用）
+    let device = match config.device_type {
+        DeviceType::Wgpu => {
+            let dev = burn_wgpu::WgpuDevice::default();
+            println!("使用デバイス: WGPU (GPU) - {:?}", dev);
+            dev
+        }
+        DeviceType::Cpu => {
+            println!("警告: CPU (NdArray) モードは現在このバイナリではサポートされていません");
+            println!("WGPU (GPU) を使用します");
+            let dev = burn_wgpu::WgpuDevice::default();
+            println!("使用デバイス: WGPU (GPU) - {:?}", dev);
+            dev
+        }
+    };
 
     // データセット読み込み
     let dataset = IconDataset::load(&data_dir)?;
-    let (dataset_train, dataset_val) = dataset.split(0.8);
+    let (dataset_train, dataset_val) = dataset.split(config.training.train_ratio);
 
     println!("\n学習データ: {} 枚", dataset_train.len());
     println!("検証データ: {} 枚", dataset_val.len());
@@ -342,25 +369,38 @@ fn main() -> anyhow::Result<()> {
     println!("  FC: 128*6*6 -> 256 -> {}", NUM_CLASSES);
 
     // 学習設定
-    let config = TrainingConfig::new(
-        ModelConfig::new(NUM_CLASSES),
-        AdamConfig::new(),
-    )
-    .with_num_epochs(num_epochs)
-    .with_batch_size(batch_size)
-    .with_learning_rate(1.0e-3);
+    let training_config = TrainingConfig::new(ModelConfig::new(NUM_CLASSES), AdamConfig::new())
+        .with_num_epochs(num_epochs)
+        .with_batch_size(batch_size)
+        .with_learning_rate(config.training.learning_rate);
 
     println!("\n=== 学習設定 ===");
-    println!("エポック数: {}", config.num_epochs);
-    println!("バッチサイズ: {}", config.batch_size);
-    println!("学習率: {}", config.learning_rate);
+    println!("エポック数: {}", training_config.num_epochs);
+    println!("バッチサイズ: {}", training_config.batch_size);
+    println!("学習率: {}", training_config.learning_rate);
 
     // 学習実行
     println!("\n=== 学習開始 ===\n");
-    train::<MyAutodiffBackend>("models", config, device, dataset_train, dataset_val);
+    train::<MyAutodiffBackend>(
+        "models",
+        training_config,
+        device,
+        dataset_train,
+        dataset_val,
+    );
 
     println!("\n✓ 学習完了!");
     println!("\nモデル保存先: models/model");
+
+    // 設定を更新して保存
+    config.training.num_epochs = num_epochs;
+    config.training.batch_size = batch_size;
+    config.set_model_path("models/model".to_string());
+
+    if let Err(e) = config.save_default() {
+        eprintln!("警告: 設定ファイルの保存に失敗しました: {}", e);
+    }
+
     println!();
     println!("次のステップ:");
     println!("  1. モデルを使用してinput_cells_allから新しいデータを収集");

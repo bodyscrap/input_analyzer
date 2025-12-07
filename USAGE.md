@@ -1,5 +1,55 @@
 # 使用方法ガイド
 
+## 設定ファイル (config.json)
+
+アプリケーションは `config.json` を使用して設定を保存・読み込みます。
+
+### 設定ファイルの生成
+
+初回使用時、またはデフォルト設定にリセットしたい場合：
+
+```bash
+cargo run --bin create_default_config
+```
+
+このコマンドで `config.json` が生成され、以下の設定が含まれます：
+- 計算デバイス（GPU/CPU）
+- モデルファイルのパス
+- 学習パラメータ
+- 前回使用したファイルパス
+
+### 設定ファイルの内容
+
+```json
+{
+  "device_type": "Wgpu",
+  "model": {
+    "model_path": "models/icon_classifier.bin",
+    "num_classes": 14,
+    "dropout": 0.5
+  },
+  "training": {
+    "num_epochs": 50,
+    "batch_size": 8,
+    "num_workers": 1,
+    "learning_rate": 0.001,
+    "seed": 42,
+    "train_ratio": 0.8
+  },
+  "last_video_path": null,
+  "last_output_dir": null
+}
+```
+
+### 設定の自動保存
+
+以下の操作を行うと、設定が自動的に更新されます：
+- **モデル学習時**: 学習パラメータとモデルパスを保存
+- **入力履歴抽出時**: ビデオパス、出力先、モデルパスを保存
+- **GUI使用時**: デバイス設定とファイルパスを保存
+
+詳細は [CONFIG.md](CONFIG.md) を参照してください。
+
 ## 基本的な使い方
 
 ### 1. 動画からフレームを抽出する

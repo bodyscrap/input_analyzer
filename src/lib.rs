@@ -1,3 +1,4 @@
+pub mod config;
 pub mod frame_extractor;
 pub mod input_analyzer;
 pub mod input_recognizer;
