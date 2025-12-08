@@ -23,13 +23,20 @@ use burn::{
 
 #[cfg(feature = "ml")]
 use input_analyzer::ml_model::{
-    load_and_normalize_image, IconClassifier, ModelConfig, CLASS_NAMES, IMAGE_SIZE, NUM_CLASSES,
+    load_and_normalize_image, IconClassifier, ModelConfig, BUTTON_LABELS, IMAGE_SIZE,
 };
+
+#[cfg(feature = "ml")]
+use input_analyzer::model_metadata::ModelMetadata;
+#[cfg(feature = "ml")]
+use input_analyzer::model_storage;
 
 #[cfg(feature = "ml")]
 use rand::seq::SliceRandom;
 #[cfg(feature = "ml")]
 use std::path::{Path, PathBuf};
+#[cfg(feature = "ml")]
+use anyhow::Context;
 
 // WGPUバックエンド（GPU使用）
 #[cfg(feature = "ml")]
@@ -60,13 +67,42 @@ struct IconDataset {
 
 #[cfg(feature = "ml")]
 impl IconDataset {
+    /// トレーニングディレクトリからクラスラベルを自動生成
+    fn detect_classes(data_dir: &Path) -> anyhow::Result<Vec<String>> {
+        let entries: Vec<_> = std::fs::read_dir(data_dir)?
+            .filter_map(Result::ok)
+            .filter_map(|e| {
+                let path = e.path();
+                if path.is_dir() {
+                    if let Some(name) = path.file_name() {
+                        if let Some(name_str) = name.to_str() {
+                            return Some(name_str.to_string());
+                        }
+                    }
+                }
+                None
+            })
+            .collect();
+        
+        // アルファベット順でソート（一貫性を保つため）
+        let mut classes = entries;
+        classes.sort();
+        
+        if classes.is_empty() {
+            anyhow::bail!("トレーニングディレクトリにサブディレクトリが見つかりませんでした");
+        }
+        
+        Ok(classes)
+    }
+
     /// データセットを読み込み
-    fn load(data_dir: &Path) -> anyhow::Result<Self> {
+    fn load(data_dir: &Path, class_names: &[String]) -> anyhow::Result<Self> {
         let mut items = Vec::new();
 
         println!("=== データセット読み込み中 ===");
+        println!("検出されたクラス: {}", class_names.len());
 
-        for (class_idx, class_name) in CLASS_NAMES.iter().enumerate() {
+        for (class_idx, class_name) in class_names.iter().enumerate() {
             let class_dir = data_dir.join(class_name);
             if !class_dir.exists() {
                 println!("警告: {} ディレクトリが存在しません", class_name);
@@ -292,6 +328,40 @@ fn train<B: AutodiffBackend>(
         .expect("Trained model should be saved successfully");
 }
 
+/// 学習データディレクトリから画像サイズを検出
+#[cfg(feature = "ml")]
+fn detect_image_size_from_dataset(data_dir: &Path) -> anyhow::Result<(u32, u32)> {
+    use image::GenericImageView;
+    
+    // 各クラスディレクトリから最初の画像を探す
+    for entry in std::fs::read_dir(data_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        
+        if path.is_dir() {
+            // サブディレクトリ内の最初の画像ファイルを探す
+            for file_entry in std::fs::read_dir(&path)? {
+                let file_entry = file_entry?;
+                let file_path = file_entry.path();
+                
+                if let Some(ext) = file_path.extension() {
+                    let ext_lower = ext.to_string_lossy().to_lowercase();
+                    if ext_lower == "png" || ext_lower == "jpg" || ext_lower == "jpeg" {
+                        // 画像を読み込んでサイズを取得
+                        let img = image::open(&file_path)
+                            .with_context(|| format!("画像の読み込みに失敗: {}", file_path.display()))?;
+                        let (width, height) = img.dimensions();
+                        return Ok((width, height));
+                    }
+                }
+            }
+        }
+    }
+    
+    // 画像が見つからない場合はエラー
+    anyhow::bail!("学習データディレクトリに画像ファイルが見つかりません: {}", data_dir.display())
+}
+
 #[cfg(feature = "ml")]
 fn main() -> anyhow::Result<()> {
     // 設定ファイルを読み込み（存在しない場合はデフォルト設定）
@@ -332,10 +402,19 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    println!("================================================================================");
+    println!("=================================================================================");
     println!("アイコン分類モデル学習 (Burn)");
-    println!("================================================================================");
+    println!("=================================================================================");
     println!("\nデータディレクトリ: {}", data_dir.display());
+
+    // クラスラベルを自動検出
+    let class_names = IconDataset::detect_classes(&data_dir)?;
+    let num_classes = class_names.len();
+    
+    println!("\n検出されたクラス:");
+    for (i, class_name) in class_names.iter().enumerate() {
+        println!("  {}: {}", i, class_name);
+    }
 
     // デバイス設定（設定ファイルの値を使用）
     let device = match config.device_type {
@@ -354,7 +433,7 @@ fn main() -> anyhow::Result<()> {
     };
 
     // データセット読み込み
-    let dataset = IconDataset::load(&data_dir)?;
+    let dataset = IconDataset::load(&data_dir, &class_names)?;
     let (dataset_train, dataset_val) = dataset.split(config.training.train_ratio);
 
     println!("\n学習データ: {} 枚", dataset_train.len());
@@ -366,10 +445,10 @@ fn main() -> anyhow::Result<()> {
     println!("  Conv1: 3 -> 32 (48x48 -> 24x24)");
     println!("  Conv2: 32 -> 64 (24x24 -> 12x12)");
     println!("  Conv3: 64 -> 128 (12x12 -> 6x6)");
-    println!("  FC: 128*6*6 -> 256 -> {}", NUM_CLASSES);
+    println!("  FC: 128*6*6 -> 256 -> {}", num_classes);
 
     // 学習設定
-    let training_config = TrainingConfig::new(ModelConfig::new(NUM_CLASSES), AdamConfig::new())
+    let training_config = TrainingConfig::new(ModelConfig::new(num_classes), AdamConfig::new())
         .with_num_epochs(num_epochs)
         .with_batch_size(batch_size)
         .with_learning_rate(config.training.learning_rate);
@@ -390,12 +469,52 @@ fn main() -> anyhow::Result<()> {
     );
 
     println!("\n✓ 学習完了!");
-    println!("\nモデル保存先: models/model");
+
+    // モデルとメタデータを保存
+    println!("\n=== モデルを保存中 ===");
+    
+    let model_path = std::path::PathBuf::from("models/icon_classifier");
+    
+    // モデルバイナリを読み込み
+    let model_binary = std::fs::read("models/model.mpk")
+        .context("Failed to read compiled model file")?;
+
+    // 学習データから画像サイズを取得
+    let (image_width, image_height) = detect_image_size_from_dataset(&data_dir)?;
+    println!("検出された学習データ画像サイズ: {}x{}", image_width, image_height);
+
+    // メタデータを作成（設定と検出値を使用）
+    let button_labels: Vec<String> = BUTTON_LABELS.iter().map(|s| s.to_string()).collect();
+    let metadata = ModelMetadata::new(
+        button_labels,
+        image_width,
+        image_height,
+        config.button_tile.x,
+        config.button_tile.y,
+        config.button_tile.width,
+        config.button_tile.height,
+        config.button_tile.columns_per_row,
+        IMAGE_SIZE as u32,  // model_input_size
+        num_epochs as u32,
+    );
+
+    // Tar.gz形式で保存
+    model_storage::save_model_with_metadata(&model_path, &metadata, &model_binary)
+        .context("Failed to save model with metadata")?;
+
+    let tar_gz_path = model_path.with_extension("tar.gz");
+    println!("✓ モデルを保存しました: {}", tar_gz_path.display());
+    println!("\nTar.gzファイル内容:");
+    println!("  metadata.json - メタデータ（ボタン情報、タイル設定など）");
+    println!("  model.bin     - モデルの重み");
+
+    // メタデータを表示
+    model_storage::print_metadata_info(&metadata);
 
     // 設定を更新して保存
     config.training.num_epochs = num_epochs;
     config.training.batch_size = batch_size;
-    config.set_model_path("models/model".to_string());
+    config.set_model_path(tar_gz_path.to_string_lossy().to_string());
 
     if let Err(e) = config.save_default() {
         eprintln!("警告: 設定ファイルの保存に失敗しました: {}", e);

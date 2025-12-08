@@ -218,10 +218,16 @@ impl FrameExtractor {
         let output_paths = Arc::new(Mutex::new(Vec::new()));
         let frame_count = Arc::new(Mutex::new(0u32));
         let extracted_count = Arc::new(Mutex::new(0u32));
+        
+        // 必要なフレーム数に達したら停止するためのフラグ
+        // frame_intervalが非常に大きい場合（frame 0のみ）は、1フレーム抽出後に停止
+        let should_stop = Arc::new(Mutex::new(false));
+        let target_extracts = if self.config.frame_interval == u32::MAX { 1 } else { u32::MAX };
 
         let output_paths_clone = output_paths.clone();
         let frame_count_clone = frame_count.clone();
         let extracted_count_clone = extracted_count.clone();
+        let should_stop_clone = should_stop.clone();
         let config = self.config.clone();
 
         // サンプルコールバックを設定
@@ -273,6 +279,12 @@ impl FrameExtractor {
                                 if *extracted % 10 == 0 {
                                     println!("  {}フレーム抽出完了", *extracted);
                                 }
+                                
+                                // 必要なフレーム数に達したら停止フラグを立てる
+                                if *extracted >= target_extracts {
+                                    let mut stop = should_stop_clone.lock().unwrap();
+                                    *stop = true;
+                                }
                             }
                         }
                     }
@@ -310,6 +322,12 @@ impl FrameExtractor {
                 }
                 _ => (),
             }
+            
+            // 必要なフレーム数に達したら停止
+            if *should_stop.lock().unwrap() {
+                println!("\n必要なフレーム数に達しました。処理を停止します。");
+                break;
+            }
         }
 
         // パイプラインを停止
@@ -331,30 +349,170 @@ impl FrameExtractor {
         Ok(paths)
     }
 
+    /// シーク後、指定フレーム位置の単一フレームをデコード
+    pub fn extract_frame_at_seek<P: AsRef<Path>>(
+        &self,
+        video_path: P,
+        frame_number: u32,
+    ) -> Result<PathBuf> {
+        Self::init_gstreamer()?;
+
+        let video_path = video_path.as_ref();
+        let info = Self::get_video_info(video_path)?;
+        
+        // フレーム番号から時間（秒）を計算
+        let time_sec = (frame_number as f64) / info.fps;
+        let time_ns = gst::ClockTime::from_seconds(time_sec as u64);
+
+        // 出力ディレクトリを作成
+        std::fs::create_dir_all(&self.config.output_dir)
+            .context("出力ディレクトリの作成に失敗しました")?;
+
+        // GStreamerパイプラインを構築
+        let pipeline = gst::Pipeline::new();
+
+        let source = ElementFactory::make("filesrc")
+            .property("location", video_path.to_str().unwrap())
+            .build()
+            .context("filesrcの作成に失敗しました")?;
+
+        let decodebin = ElementFactory::make("decodebin")
+            .build()
+            .context("decodebinの作成に失敗しました")?;
+
+        let videoconvert = ElementFactory::make("videoconvert")
+            .build()
+            .context("videoconvertの作成に失敗しました")?;
+
+        let appsink = ElementFactory::make("appsink")
+            .build()
+            .context("appsinkの作成に失敗しました")?;
+
+        let appsink = appsink
+            .dynamic_cast::<AppSink>()
+            .map_err(|_| anyhow::anyhow!("appsinkへのキャストに失敗しました"))?;
+
+        appsink.set_caps(Some(
+            &gst::Caps::builder("video/x-raw")
+                .field("format", "RGB")
+                .build(),
+        ));
+        appsink.set_property("emit-signals", false);
+        appsink.set_property("sync", false);
+
+        pipeline
+            .add_many(&[&source, &decodebin, &videoconvert, appsink.upcast_ref::<gst::Element>()])
+            .context("エレメントの追加に失敗しました")?;
+
+        source
+            .link(&decodebin)
+            .context("sourceとdecoderのリンクに失敗しました")?;
+
+        videoconvert
+            .link(appsink.upcast_ref::<gst::Element>())
+            .context("converterとsinkのリンクに失敗しました")?;
+
+        // decodebinの動的パッドをリンク
+        let videoconvert_clone = videoconvert.clone();
+        decodebin.connect_pad_added(move |_dbin, pad| {
+            if pad.name().starts_with("video") {
+                let videoconvert_sink = videoconvert_clone.static_pad("sink").unwrap();
+                let _ = pad.link(&videoconvert_sink);
+            }
+        });
+
+        // パイプラインを再生状態に
+        pipeline
+            .set_state(gst::State::Playing)
+            .context("パイプラインの開始に失敗しました")?;
+
+        // シーク処理
+        pipeline.seek_simple(gst::SeekFlags::FLUSH, time_ns)?;
+
+        // AppSinkからサンプルを取得
+        let _appsink_element = appsink.upcast_ref::<gst::Element>();
+        
+        // パイプラインを停止するまでサンプルを待機
+        std::thread::sleep(std::time::Duration::from_millis(100));
+
+        // AppSinkからサンプルを取得
+        let output_paths = Arc::new(Mutex::new(Vec::new()));
+        let output_paths_clone = output_paths.clone();
+
+        if let Some(sample) = appsink.try_pull_sample(gst::ClockTime::NONE) {
+            if let Some(buffer) = sample.buffer() {
+                if let Ok(map) = buffer.map_readable() {
+                    let caps = sample.caps().unwrap();
+                    if let Some(structure) = caps.structure(0) {
+                        if let (Ok(width), Ok(height)) = (
+                            structure.get::<i32>("width"),
+                            structure.get::<i32>("height"),
+                        ) {
+                            // 画像を保存
+                            let frame_data = map.as_slice();
+                            if let Some(img) = ImageBuffer::<Rgb<u8>, Vec<u8>>::from_raw(
+                                width as u32,
+                                height as u32,
+                                frame_data.to_vec(),
+                            ) {
+                                let output_path = self.config.output_dir.join(format!("frame_{:06}.png", frame_number));
+                                if let Ok(_) = img.save(&output_path) {
+                                    output_paths_clone.lock().unwrap().push(output_path);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        pipeline
+            .set_state(gst::State::Null)
+            .context("パイプラインの停止に失敗しました")?;
+
+        let paths = output_paths.lock().unwrap().clone();
+        paths
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("フレームの抽出に失敗しました"))
+    }
+
     /// 特定のフレーム番号のフレームを抽出
     pub fn extract_frame_at<P: AsRef<Path>>(
         &self,
         video_path: P,
         frame_number: u32,
     ) -> Result<PathBuf> {
-        // 一時的に設定を変更して特定のフレームのみを抽出
-        let mut temp_config = self.config.clone();
-        temp_config.frame_interval = frame_number + 1;
+        // frame 0の場合は最初のフレームだけを抽出
+        if frame_number == 0 {
+            // 最初のフレームのみ抽出するため、frame_intervalを非常に大きく設定
+            let mut temp_config = self.config.clone();
+            // frame_intervalを最初のフレームより大きく設定することで、
+            // 最初のフレーム（frame 0）のみが抽出される
+            temp_config.frame_interval = u32::MAX; // 最初のフレームのみを抽出
+            
+            let temp_extractor = FrameExtractor::new(temp_config);
+            let paths = temp_extractor.extract_frames(&video_path)?;
+            
+            // 最初に抽出されたフレームを返す
+            paths
+                .into_iter()
+                .next()
+                .ok_or_else(|| anyhow::anyhow!("フレームの抽出に失敗しました"))
+        } else {
+            // その他のフレームは従来の方法で抽出
+            let mut temp_config = self.config.clone();
+            temp_config.frame_interval = (frame_number + 1).max(1);
 
-        let temp_extractor = FrameExtractor::new(temp_config);
-        let paths = temp_extractor.extract_frames(video_path)?;
+            let temp_extractor = FrameExtractor::new(temp_config);
+            let paths = temp_extractor.extract_frames(&video_path)?;
 
-        paths
-            .into_iter()
-            .find(|p| {
-                p.file_stem()
-                    .and_then(|s| s.to_str())
-                    .and_then(|s| s.strip_prefix("frame_"))
-                    .and_then(|s| s.parse::<u32>().ok())
-                    .map(|n| n == frame_number)
-                    .unwrap_or(false)
-            })
-            .ok_or_else(|| anyhow::anyhow!("指定されたフレームが見つかりませんでした"))
+            // 最後に抽出されたフレームが目的のフレーム
+            paths
+                .into_iter()
+                .last()
+                .ok_or_else(|| anyhow::anyhow!("フレームの抽出に失敗しました"))
+        }
     }
 
     /// 時間指定でフレームを抽出（秒単位）

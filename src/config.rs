@@ -81,6 +81,36 @@ impl Default for TrainingSettings {
     }
 }
 
+/// ボタンタイル切り出し範囲情報
+/// 
+/// メタデータ用の参考値を保持します。
+/// 実際の解析では最新入力行(最下行)の画面座標 (204, 902) から 336x48 ピクセルを使用します。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ButtonTileSettings {
+    /// 切り出し画像内での相対X座標（メタデータ用参考値）
+    pub x: u32,
+    /// 切り出し画像内での相対Y座標（メタデータ用参考値）
+    pub y: u32,
+    /// タイルの幅（メタデータ用参考値）
+    pub width: u32,
+    /// タイルの高さ（メタデータ用参考値）
+    pub height: u32,
+    /// 解析対象列数: 継続フレーム数を除く列数 (方向キー + A1 + A2 + B + W + Start = 6列)
+    pub columns_per_row: u32,
+}
+
+impl Default for ButtonTileSettings {
+    fn default() -> Self {
+        Self {
+            x: 80,      // メタデータ用参考値: 切り出し画像内での相対X座標
+            y: 400,     // メタデータ用参考値: 切り出し画像内での相対Y座標
+            width: 480, // メタデータ用参考値: タイルの幅
+            height: 80, // メタデータ用参考値: タイルの高さ
+            columns_per_row: 6, // 解析対象の列数: 方向キー + ボタン5種
+        }
+    }
+}
+
 /// アプリケーション設定
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -90,10 +120,15 @@ pub struct AppConfig {
     pub model: ModelSettings,
     /// トレーニング設定
     pub training: TrainingSettings,
+    /// ボタンタイル設定
+    pub button_tile: ButtonTileSettings,
     /// 最後に使用したビデオファイルのパス
     pub last_video_path: Option<String>,
     /// 最後に使用した出力ディレクトリ
     pub last_output_dir: Option<String>,
+    /// 学習データ生成の出力フォルダ（前回値を保存）
+    #[serde(default)]
+    pub training_output_dir: Option<String>,
 }
 
 impl Default for AppConfig {
@@ -102,8 +137,10 @@ impl Default for AppConfig {
             device_type: DeviceType::default(),
             model: ModelSettings::default(),
             training: TrainingSettings::default(),
+            button_tile: ButtonTileSettings::default(),
             last_video_path: None,
             last_output_dir: None,
+            training_output_dir: None,
         }
     }
 }
@@ -193,6 +230,10 @@ impl AppConfig {
         println!("バッチサイズ: {}", self.training.batch_size);
         println!("学習率: {}", self.training.learning_rate);
         println!("シード: {}", self.training.seed);
+        println!("\n--- ボタンタイル設定 ---");
+        println!("切り出し開始: ({}, {})", self.button_tile.x, self.button_tile.y);
+        println!("タイルサイズ: {}x{}", self.button_tile.width, self.button_tile.height);
+        println!("列数: {}", self.button_tile.columns_per_row);
 
         if let Some(ref video) = self.last_video_path {
             println!("\n最後に使用したビデオ: {}", video);

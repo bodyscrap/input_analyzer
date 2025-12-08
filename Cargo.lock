@@ -4428,6 +4428,7 @@ dependencies = [
  "chrono",
  "eframe",
  "egui",
+ "flate2",
  "gstreamer",
  "gstreamer-app",
  "gstreamer-pbutils",
@@ -4437,6 +4438,7 @@ dependencies = [
  "rfd",
  "serde",
  "serde_json",
+ "tar",
  "walkdir",
 ]
 

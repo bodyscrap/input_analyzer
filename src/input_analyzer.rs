@@ -63,31 +63,35 @@ pub const CELL_WIDTH: u32 = 48;
 pub const CELL_HEIGHT: u32 = 48;
 
 /// 入力インジケータの領域設定
+/// 
+/// 全体領域: 画面座標 (204, 182) から 336x768 ピクセル (16行×7列)
+/// 解析対象: 最新入力行(最下行、row=15) - 座標 (204, 902) から 336x48 ピクセル
+/// 列構成: [継続フレーム数] [方向キー] [A1] [A2] [B] [W] [Start]
 #[derive(Debug, Clone)]
 pub struct InputIndicatorRegion {
-    /// 開始X座標
+    /// 開始X座標（画面座標）
     pub x: u32,
-    /// 開始Y座標
+    /// 開始Y座標（画面座標）
     pub y: u32,
-    /// 幅
+    /// 幅（全16行分）
     pub width: u32,
-    /// 高さ
+    /// 高さ（全16行分）
     pub height: u32,
-    /// 行数
+    /// 行数（全体で16行だが解析対象は最下行のみ）
     pub rows: u32,
-    /// 列数
+    /// 列数（継続フレーム数 + 方向キー + ボタン5種 = 7列）
     pub cols: u32,
 }
 
 impl Default for InputIndicatorRegion {
     fn default() -> Self {
         Self {
-            x: 204,
-            y: 182,
-            width: 336,  // 48 * 7
-            height: 768, // 48 * 16
-            rows: 16,
-            cols: 7,
+            x: 204,      // 入力インジケータ全体の開始X座標
+            y: 182,      // 入力インジケータ全体の開始Y座標
+            width: 336,  // 48 * 7列
+            height: 768, // 48 * 16行
+            rows: 16,    // 全体の行数（解析対象は最下行のみ）
+            cols: 7,     // 継続フレーム数 + 方向キー + A1 + A2 + B + W + Start
         }
     }
 }
@@ -128,13 +132,16 @@ impl InputIndicatorRegion {
 }
 
 /// 入力行データ（1行分の入力情報）
+/// 
+/// 注: 解析対象は最新入力行(row=15、最下行)のみ
+/// 継続フレーム数は画像から読み取らず、連続する同一入力を独自にカウント
 #[derive(Debug, Clone)]
 pub struct InputRow {
-    /// 行番号（0が最新、rows-1が最古）
+    /// 行番号（0が最古、15が最新。解析対象は15のみ）
     pub row_index: u32,
-    /// フレームカウント（1列目）
+    /// フレームカウント画像（1列目、解析では使用しない）
     pub frame_count_image: RgbImage,
-    /// 入力アイコン（2～7列目）
+    /// 入力アイコン（2～7列目: 方向キー + A1 + A2 + B + W + Start）
     pub input_icons: Vec<RgbImage>,
 }
 
