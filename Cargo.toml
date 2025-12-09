@@ -48,6 +48,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 chrono = "0.4"
 tar = { version = "0.4", optional = true }
+clap = { version = "4.5", features = ["derive"], optional = true }
 flate2 = { version = "1.0", optional = true }
 
 # GUI
@@ -65,7 +66,7 @@ burn-dataset = { version = "0.19.1", optional = true }
 
 [features]
 default = []
-ml = ["burn", "burn-ndarray", "burn-wgpu", "burn-autodiff", "burn-dataset", "tar", "flate2"]
+ml = ["burn", "burn-ndarray", "burn-wgpu", "burn-autodiff", "burn-dataset", "tar", "flate2", "clap"]
 gui = ["eframe", "egui", "rfd"]
 
 # ビルド高速化設定

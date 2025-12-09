@@ -37,8 +37,8 @@ fn main() -> Result<()> {
         480,  // image_height (固定値、学習時に検出された値を使用することを推奨)
         config.button_tile.x,
         config.button_tile.y,
-        config.button_tile.width,
-        config.button_tile.height,
+        config.button_tile.tile_size,
+        config.button_tile.tile_size,
         config.button_tile.columns_per_row,
         48,   // model_input_size
         1,    // num_epochs

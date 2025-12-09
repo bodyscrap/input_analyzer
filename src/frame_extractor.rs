@@ -114,8 +114,12 @@ impl FrameExtractor {
         })
     }
 
-    /// 動画からフレームを抽出
-    pub fn extract_frames<P: AsRef<Path>>(&self, video_path: P) -> Result<Vec<PathBuf>> {
+    /// 動画からフレームを抽出（進捗コールバック付き）
+    pub fn extract_frames_with_progress<P, F>(&self, video_path: P, progress_callback: Option<F>) -> Result<Vec<PathBuf>>
+    where
+        P: AsRef<Path>,
+        F: Fn(usize) + Send + Sync + 'static,
+    {
         Self::init_gstreamer()?;
 
         let video_path = video_path.as_ref();
@@ -224,10 +228,12 @@ impl FrameExtractor {
         let should_stop = Arc::new(Mutex::new(false));
         let target_extracts = if self.config.frame_interval == u32::MAX { 1 } else { u32::MAX };
 
+        let progress_callback = Arc::new(progress_callback);
         let output_paths_clone = output_paths.clone();
         let frame_count_clone = frame_count.clone();
         let extracted_count_clone = extracted_count.clone();
         let should_stop_clone = should_stop.clone();
+        let progress_callback_clone = progress_callback.clone();
         let config = self.config.clone();
 
         // サンプルコールバックを設定
@@ -275,6 +281,11 @@ impl FrameExtractor {
 
                                 let mut extracted = extracted_count_clone.lock().unwrap();
                                 *extracted += 1;
+
+                                // 進捗コールバック呼び出し
+                                if let Some(ref callback) = *progress_callback_clone {
+                                    callback(*extracted as usize);
+                                }
 
                                 if *extracted % 10 == 0 {
                                     println!("  {}フレーム抽出完了", *extracted);
@@ -347,6 +358,209 @@ impl FrameExtractor {
             .unwrap_or_else(|arc| arc.lock().unwrap().clone());
 
         Ok(paths)
+    }
+
+    /// 動画からフレームを抽出
+    pub fn extract_frames<P: AsRef<Path>>(&self, video_path: P) -> Result<Vec<PathBuf>> {
+        self.extract_frames_with_progress(video_path, None::<fn(usize)>)
+    }
+
+    /// 動画からフレームを1つずつコールバックで処理
+    /// 
+    /// # Arguments
+    /// * `video_path` - 動画ファイルパス
+    /// * `callback` - 各フレームのパスを受け取るコールバック関数。Err を返すと処理を中断
+    pub fn extract_frames_with_callback<P, F>(
+        &self,
+        video_path: P,
+        callback: F,
+    ) -> Result<()>
+    where
+        P: AsRef<Path>,
+        F: FnMut(PathBuf) -> Result<()> + Send + 'static,
+    {
+        Self::init_gstreamer()?;
+
+        let video_path = video_path.as_ref();
+        println!("動画ファイルを開いています: {}", video_path.display());
+
+        // 出力ディレクトリを作成
+        std::fs::create_dir_all(&self.config.output_dir)
+            .context("出力ディレクトリの作成に失敗しました")?;
+
+        // 動画情報を取得
+        let info = Self::get_video_info(video_path)?;
+        println!("動画情報:");
+        println!("  解像度: {}x{}", info.width, info.height);
+        println!("  FPS: {:.2}", info.fps);
+        println!("  再生時間: {:.2}秒", info.duration_sec);
+
+        // GStreamerパイプラインを構築
+        let pipeline = gst::Pipeline::new();
+
+        let source = ElementFactory::make("filesrc")
+            .name("source")
+            .build()
+            .context("filesrcの作成に失敗しました")?;
+
+        let decodebin = ElementFactory::make("decodebin")
+            .name("decoder")
+            .build()
+            .context("decodebinの作成に失敗しました")?;
+
+        let videoconvert = ElementFactory::make("videoconvert")
+            .name("converter")
+            .build()
+            .context("videoconvertの作成に失敗しました")?;
+
+        let appsink = ElementFactory::make("appsink")
+            .name("sink")
+            .build()
+            .context("appsinkの作成に失敗しました")?;
+
+        let appsink = appsink
+            .dynamic_cast::<AppSink>()
+            .map_err(|_| anyhow::anyhow!("appsinkへのキャストに失敗しました"))?;
+
+        appsink.set_caps(Some(
+            &gst::Caps::builder("video/x-raw")
+                .field("format", "RGB")
+                .build(),
+        ));
+        appsink.set_property("emit-signals", false);
+        appsink.set_property("sync", false);
+
+        source.set_property("location", video_path.to_str().unwrap());
+
+        pipeline
+            .add_many(&[&source, &decodebin, &videoconvert, appsink.upcast_ref::<gst::Element>()])
+            .context("エレメントの追加に失敗しました")?;
+
+        source.link(&decodebin).context("sourceとdecoderのリンクに失敗しました")?;
+        videoconvert.link(appsink.upcast_ref::<gst::Element>())
+            .context("converterとsinkのリンクに失敗しました")?;
+
+        let videoconvert_clone = videoconvert.clone();
+        decodebin.connect_pad_added(move |_src, src_pad| {
+            let sink_pad = videoconvert_clone
+                .static_pad("sink")
+                .expect("videoconvertのsinkパッドが見つかりません");
+
+            if !sink_pad.is_linked() {
+                if let Err(e) = src_pad.link(&sink_pad) {
+                    eprintln!("パッドのリンクに失敗: {:?}", e);
+                }
+            }
+        });
+
+        let frame_count = Arc::new(Mutex::new(0u32));
+        let extracted_count = Arc::new(Mutex::new(0u32));
+        let callback_error = Arc::new(Mutex::new(None::<String>));
+        let callback = Arc::new(Mutex::new(callback));
+
+        let frame_count_clone = frame_count.clone();
+        let extracted_count_clone = extracted_count.clone();
+        let callback_error_clone = callback_error.clone();
+        let callback_clone = callback.clone();
+        let config = self.config.clone();
+
+        appsink.set_callbacks(
+            gstreamer_app::AppSinkCallbacks::builder()
+                .new_sample(move |appsink| {
+                    // エラーが既に発生していたら処理を中断
+                    if callback_error_clone.lock().unwrap().is_some() {
+                        return Err(gst::FlowError::Error);
+                    }
+
+                    let sample = appsink.pull_sample().map_err(|_| gst::FlowError::Error)?;
+                    let buffer = sample.buffer().ok_or(gst::FlowError::Error)?;
+                    let caps = sample.caps().ok_or(gst::FlowError::Error)?;
+
+                    let video_info = gstreamer_video::VideoInfo::from_caps(caps)
+                        .map_err(|_| gst::FlowError::Error)?;
+
+                    let map = buffer.map_readable().map_err(|_| gst::FlowError::Error)?;
+
+                    let mut frame_num = frame_count_clone.lock().unwrap();
+                    let current_frame = *frame_num;
+                    *frame_num += 1;
+
+                    if current_frame % config.frame_interval == 0 {
+                        let width = video_info.width() as u32;
+                        let height = video_info.height() as u32;
+
+                        let data = map.as_slice();
+                        let img = image::RgbImage::from_raw(width, height, data.to_vec())
+                            .ok_or(gst::FlowError::Error)?;
+
+                        let output_filename = format!("frame_{:08}.{}", current_frame, config.image_format);
+                        let output_path = config.output_dir.join(&output_filename);
+
+                        if let Err(e) = img.save(&output_path) {
+                            eprintln!("画像保存エラー: {}", e);
+                            return Err(gst::FlowError::Error);
+                        }
+
+                        let mut extracted = extracted_count_clone.lock().unwrap();
+                        *extracted += 1;
+
+                        // コールバックを呼び出し
+                        let result = {
+                            let mut cb = callback_clone.lock().unwrap();
+                            cb(output_path)
+                        };
+                        
+                        if let Err(e) = result {
+                            *callback_error_clone.lock().unwrap() = Some(format!("コールバックエラー: {}", e));
+                            return Err(gst::FlowError::Error);
+                        }
+                    }
+
+                    Ok(gst::FlowSuccess::Ok)
+                })
+                .build(),
+        );
+
+        pipeline.set_state(gst::State::Playing)
+            .context("パイプラインの開始に失敗しました")?;
+
+        let bus = pipeline.bus().expect("パイプラインにバスがありません");
+
+        for msg in bus.iter_timed(gst::ClockTime::NONE) {
+            use gst::MessageView;
+
+            match msg.view() {
+                MessageView::Eos(..) => {
+                    break;
+                }
+                MessageView::Error(err) => {
+                    pipeline.set_state(gst::State::Null).ok();
+                    anyhow::bail!(
+                        "エラーが発生しました: {} (デバッグ情報: {:?})",
+                        err.error(),
+                        err.debug()
+                    );
+                }
+                _ => (),
+            }
+        }
+
+        pipeline.set_state(gst::State::Null)
+            .context("パイプラインの停止に失敗しました")?;
+
+        // コールバックでエラーが発生していたら返す
+        if let Some(error) = callback_error.lock().unwrap().take() {
+            anyhow::bail!(error);
+        }
+
+        let final_frame_count = *frame_count.lock().unwrap();
+        let final_extracted_count = *extracted_count.lock().unwrap();
+
+        println!("\n抽出完了!");
+        println!("  処理フレーム数: {}", final_frame_count);
+        println!("  抽出フレーム数: {}", final_extracted_count);
+
+        Ok(())
     }
 
     /// シーク後、指定フレーム位置の単一フレームをデコード

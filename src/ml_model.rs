@@ -17,7 +17,6 @@ use burn::{
 };
 
 /// クラス数
-#[cfg(feature = "ml")]
 pub const NUM_CLASSES: usize = 14;
 
 /// 画像サイズ
@@ -25,7 +24,7 @@ pub const NUM_CLASSES: usize = 14;
 pub const IMAGE_SIZE: usize = 48;
 
 /// クラス名の定義
-pub const CLASS_NAMES: [&str; NUM_CLASSES] = [
+pub const CLASS_NAMES: [&str; 14] = [
     "A1", "A2", "B", "Start", "W", "dir_1", "dir_2", "dir_3", "dir_4",
     "dir_6", "dir_7", "dir_8", "dir_9", "others",
 ];

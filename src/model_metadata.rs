@@ -33,6 +33,14 @@ pub struct ModelMetadata {
     /// 学習時に使用した画像ファイルから自動検出される（通常48）
     pub image_height: u32,
 
+    /// 解析対象動画の解像度（幅）
+    /// 学習データ生成時の動画解像度を記録（推論時の検証に使用）
+    pub video_width: u32,
+
+    /// 解析対象動画の解像度（高さ）
+    /// 学習データ生成時の動画解像度を記録（推論時の検証に使用）
+    pub video_height: u32,
+
     /// タイル切り出し開始X座標（切り出し画像内での相対座標）
     /// config.jsonの button_tile.x から取得（デフォルト: 80）
     pub tile_x: u32,
@@ -70,6 +78,8 @@ impl ModelMetadata {
         button_labels: Vec<String>,
         image_width: u32,
         image_height: u32,
+        video_width: u32,
+        video_height: u32,
         tile_x: u32,
         tile_y: u32,
         tile_width: u32,
@@ -84,6 +94,8 @@ impl ModelMetadata {
             button_labels,
             image_width,
             image_height,
+            video_width,
+            video_height,
             tile_x,
             tile_y,
             tile_width,

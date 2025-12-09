@@ -91,12 +91,18 @@ pub struct ButtonTileSettings {
     pub x: u32,
     /// 切り出し画像内での相対Y座標（メタデータ用参考値）
     pub y: u32,
-    /// タイルの幅（メタデータ用参考値）
-    pub width: u32,
-    /// タイルの高さ（メタデータ用参考値）
-    pub height: u32,
-    /// 解析対象列数: 継続フレーム数を除く列数 (方向キー + A1 + A2 + B + W + Start = 6列)
+    /// タイルサイズ（正方形、ピクセル）
+    /// CNNの入力が正方形であるため、幅と高さは同一である必要がある
+    pub tile_size: u32,
+    /// 解析対象列数: 継続フレーム数を除く列数 (方向キー1 + ボタン5 = 6列)
+    /// 実際の列構成: [継続フレーム数] [方向またはボタン×6] = 計7列
     pub columns_per_row: u32,
+    /// 学習データ生成時の動画解像度（幅）
+    #[serde(default)]
+    pub source_video_width: u32,
+    /// 学習データ生成時の動画解像度（高さ）
+    #[serde(default)]
+    pub source_video_height: u32,
 }
 
 impl Default for ButtonTileSettings {
@@ -104,9 +110,10 @@ impl Default for ButtonTileSettings {
         Self {
             x: 80,      // メタデータ用参考値: 切り出し画像内での相対X座標
             y: 400,     // メタデータ用参考値: 切り出し画像内での相対Y座標
-            width: 480, // メタデータ用参考値: タイルの幅
-            height: 80, // メタデータ用参考値: タイルの高さ
+            tile_size: 48, // タイルサイズ（正方形、48x48ピクセル）
             columns_per_row: 6, // 解析対象の列数: 方向キー + ボタン5種
+            source_video_width: 1920,
+            source_video_height: 1080,
         }
     }
 }
@@ -232,7 +239,7 @@ impl AppConfig {
         println!("シード: {}", self.training.seed);
         println!("\n--- ボタンタイル設定 ---");
         println!("切り出し開始: ({}, {})", self.button_tile.x, self.button_tile.y);
-        println!("タイルサイズ: {}x{}", self.button_tile.width, self.button_tile.height);
+        println!("タイルサイズ: {}x{}", self.button_tile.tile_size, self.button_tile.tile_size);
         println!("列数: {}", self.button_tile.columns_per_row);
 
         if let Some(ref video) = self.last_video_path {

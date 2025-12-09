@@ -1,7 +1,20 @@
 //! Burn機械学習フレームワークを使用した入力アイコン分類モデルのトレーニング
 //!
-//! 48x48のゲーム入力アイコン画像を14クラスに分類するCNNモデルを学習します。
+//! 48x48のゲーム入力アイコン画像を分類するCNNモデルを学習します。
 //! Burn 0.19.1 + AutodiffBackend (WGPU) を使用します。
+//!
+//! ## 使用方法
+//! ```bash
+//! cargo run --bin train_model --features ml --release -- \
+//!   --data-dir training_data \
+//!   --output models/my_model \
+//!   --buttons "A1,A2,B,W,Start" \
+//!   --epochs 50 \
+//!   --batch-size 8
+//! ```
+
+#[cfg(feature = "ml")]
+use clap::Parser;
 
 #[cfg(feature = "ml")]
 use input_analyzer::config::{AppConfig, DeviceType};
@@ -68,8 +81,8 @@ struct IconDataset {
 #[cfg(feature = "ml")]
 impl IconDataset {
     /// トレーニングディレクトリからクラスラベルを自動生成
-    fn detect_classes(data_dir: &Path) -> anyhow::Result<Vec<String>> {
-        let entries: Vec<_> = std::fs::read_dir(data_dir)?
+    fn detect_classes(data_dir: &Path, button_labels: &[String]) -> anyhow::Result<Vec<String>> {
+        let mut entries: Vec<String> = std::fs::read_dir(data_dir)?
             .filter_map(Result::ok)
             .filter_map(|e| {
                 let path = e.path();
@@ -84,9 +97,22 @@ impl IconDataset {
             })
             .collect();
         
-        // アルファベット順でソート（一貫性を保つため）
-        let mut classes = entries;
-        classes.sort();
+        // 方向キーを分離
+        let mut dir_classes: Vec<String> = entries.iter()
+            .filter(|name| name.starts_with("dir_"))
+            .cloned()
+            .collect();
+        dir_classes.sort(); // dir_1, dir_2, ..., dir_9
+        
+        // ボタンクラス（button_labelsの順序）
+        let button_classes: Vec<String> = button_labels.iter()
+            .filter(|label| entries.contains(label))
+            .cloned()
+            .collect();
+        
+        // 順序: dir_1~9, ボタン順
+        let mut classes = dir_classes;
+        classes.extend(button_classes);
         
         if classes.is_empty() {
             anyhow::bail!("トレーニングディレクトリにサブディレクトリが見つかりませんでした");
@@ -188,38 +214,35 @@ impl<B: Backend> burn::data::dataloader::batcher::Batcher<B, IconItem, IconBatch
     fn batch(&self, items: Vec<IconItem>, _device: &B::Device) -> IconBatch<B> {
         let batch_size = items.len();
 
-        // 各画像を個別に処理してテンソルを作成
-        let mut batch_images = Vec::with_capacity(batch_size);
+        // 全画像データをCPUメモリで一度にまとめてから、GPUへ1回で転送
+        let mut all_pixels = Vec::with_capacity(batch_size * 3 * IMAGE_SIZE * IMAGE_SIZE);
         let mut targets_vec = Vec::with_capacity(batch_size);
 
         for item in items {
-            // 画像をロードして即座にTensorに変換
+            // 画像をロードして正規化（CPUメモリ上）
             match load_and_normalize_image(&item.path) {
                 Ok(image_data) => {
-                    // 即座にTensorに変換(CPUメモリからGPUメモリへ)
-                    let image_tensor =
-                        Tensor::<B, 1>::from_floats(image_data.as_slice(), &self.device)
-                            .reshape([1, 3, IMAGE_SIZE, IMAGE_SIZE]);
-                    batch_images.push(image_tensor);
+                    all_pixels.extend_from_slice(&image_data);
                     targets_vec.push(item.label as i64);
-                    // image_dataはここでドロップされる
+                    // image_dataはここでドロップ（すぐにメモリ解放）
                 }
                 Err(e) => {
                     eprintln!("警告: 画像読み込み失敗 {}: {}", item.path.display(), e);
-                    // エラーの場合はゼロテンソルを作成
-                    let zero_tensor =
-                        Tensor::<B, 4>::zeros([1, 3, IMAGE_SIZE, IMAGE_SIZE], &self.device);
-                    batch_images.push(zero_tensor);
+                    // エラーの場合はゼロで埋める
+                    all_pixels.extend(vec![0.0f32; 3 * IMAGE_SIZE * IMAGE_SIZE]);
                     targets_vec.push(item.label as i64);
                 }
             }
         }
 
-        // バッチテンソルを結合
-        let images = Tensor::cat(batch_images, 0);
+        // 1回の転送でバッチ全体をGPUメモリへ
+        let images = Tensor::<B, 1>::from_floats(all_pixels.as_slice(), &self.device)
+            .reshape([batch_size, 3, IMAGE_SIZE, IMAGE_SIZE]);
         let targets = Tensor::<B, 1, Int>::from_ints(targets_vec.as_slice(), &self.device);
 
-        // batch_imagesとtargets_vecは既に消費されているため、dropは不要
+        // CPUメモリを明示的に解放
+        drop(all_pixels);
+        drop(targets_vec);
 
         IconBatch { images, targets }
     }
@@ -228,22 +251,52 @@ impl<B: Backend> burn::data::dataloader::batcher::Batcher<B, IconItem, IconBatch
 #[cfg(feature = "ml")]
 impl<B: AutodiffBackend> TrainStep<IconBatch<B>, ClassificationOutput<B>> for IconClassifier<B> {
     fn step(&self, batch: IconBatch<B>) -> TrainOutput<ClassificationOutput<B>> {
-        let images = batch.images;
-        let targets = batch.targets;
-        let item = self.forward_classification(images, targets);
+        let item = self.forward_classification(batch.images, batch.targets);
         let grads = item.loss.backward();
-        let output = TrainOutput::new(self, grads, item);
-        output
+        TrainOutput::new(self, grads, item)
     }
 }
 
 #[cfg(feature = "ml")]
 impl<B: Backend> ValidStep<IconBatch<B>, ClassificationOutput<B>> for IconClassifier<B> {
     fn step(&self, batch: IconBatch<B>) -> ClassificationOutput<B> {
-        let images = batch.images;
-        let targets = batch.targets;
-        self.forward_classification(images, targets)
+        self.forward_classification(batch.images, batch.targets)
     }
+}
+
+#[cfg(feature = "ml")]
+#[derive(Parser, Debug)]
+#[command(name = "train_model")]
+#[command(about = "入力アイコン分類モデルのトレーニング", long_about = None)]
+struct Args {
+    /// 学習データディレクトリ（各サブディレクトリがクラスラベル）
+    #[arg(short, long, default_value = "training_data")]
+    data_dir: String,
+
+    /// 出力モデルのパス（.tar.gz拡張子は自動追加）
+    #[arg(short, long, default_value = "models/icon_classifier")]
+    output: String,
+
+    /// ボタンラベルのカンマ区切りリスト（方向入力とothersを除く）
+    /// 例: "A1,A2,B,W,Start"
+    #[arg(short, long)]
+    buttons: Option<String>,
+
+    /// エポック数
+    #[arg(short, long, default_value_t = 50)]
+    epochs: usize,
+
+    /// バッチサイズ
+    #[arg(long, default_value_t = 8)]
+    batch_size: usize,
+
+    /// 学習率
+    #[arg(long, default_value_t = 0.001)]
+    learning_rate: f64,
+
+    /// 検証データの割合（0.0-1.0）
+    #[arg(long, default_value_t = 0.2)]
+    val_ratio: f32,
 }
 
 #[cfg(feature = "ml")]
@@ -255,7 +308,7 @@ pub struct TrainingConfig {
     pub num_epochs: usize,
     #[config(default = 8)]
     pub batch_size: usize,
-    #[config(default = 1)]
+    #[config(default = 0)]
     pub num_workers: usize,
     #[config(default = 42)]
     pub seed: u64,
@@ -290,37 +343,46 @@ fn train<B: AutodiffBackend>(
     use rand::SeedableRng;
     let _ = rand::rngs::StdRng::seed_from_u64(config.seed);
 
+    eprintln!("📊 バッチャーを作成中...");
     let batcher_train = IconBatcher::<B>::new(device.clone());
     let batcher_val = IconBatcher::<B::InnerBackend>::new(device.clone());
 
+    eprintln!("📊 データローダーを作成中...");
+    // num_workers=0: 各バッチを学習ループ内でオンデマンド読み込み（メモリ効率的）
     let dataloader_train = DataLoaderBuilder::new(batcher_train)
         .batch_size(config.batch_size)
         .shuffle(config.seed)
-        .num_workers(config.num_workers)
+        .num_workers(0)
         .build(dataset_train);
 
     let dataloader_val = DataLoaderBuilder::new(batcher_val)
         .batch_size(config.batch_size)
         .shuffle(config.seed)
-        .num_workers(config.num_workers)
+        .num_workers(0)
         .build(dataset_val);
 
+    eprintln!("🧠 モデルを初期化中...");
+    let model = config.model.init::<B>(&device);
+    eprintln!("✓ モデル初期化完了");
+
+    eprintln!("📚 Learnerを構築中...");
     let learner = LearnerBuilder::new(artifact_dir)
         .metric_train_numeric(AccuracyMetric::new())
         .metric_valid_numeric(AccuracyMetric::new())
         .metric_train_numeric(LossMetric::new())
         .metric_valid_numeric(LossMetric::new())
-        .with_file_checkpointer(CompactRecorder::new())
         .learning_strategy(LearningStrategy::SingleDevice(device.clone()))
         .num_epochs(config.num_epochs)
         .summary()
         .build(
-            config.model.init::<B>(&device),
+            model,
             config.optimizer.init(),
             config.learning_rate,
         );
 
+    eprintln!("🚀 学習ループ開始...");
     let model_trained = learner.fit(dataloader_train, dataloader_val);
+    eprintln!("✓ 学習ループ完了");
 
     model_trained
         .model
@@ -364,77 +426,67 @@ fn detect_image_size_from_dataset(data_dir: &Path) -> anyhow::Result<(u32, u32)>
 
 #[cfg(feature = "ml")]
 fn main() -> anyhow::Result<()> {
-    // 設定ファイルを読み込み（存在しない場合はデフォルト設定）
-    let mut config = AppConfig::load_or_default();
+    let args = Args::parse();
+    let config = AppConfig::load_or_default();
 
-    // 設定情報を表示
-    config.display();
+    let data_dir = PathBuf::from(&args.data_dir);
 
-    let args: Vec<String> = std::env::args().collect();
-    let data_dir = if args.len() >= 2 {
-        PathBuf::from(&args[1])
-    } else {
-        PathBuf::from("training_data")
-    };
-
-    // コマンドライン引数で上書き可能
-    let num_epochs = if args.len() >= 3 {
-        args[2].parse().unwrap_or(config.training.num_epochs)
-    } else {
-        config.training.num_epochs
-    };
-
-    let batch_size = if args.len() >= 4 {
-        args[3].parse().unwrap_or(config.training.batch_size)
-    } else {
-        config.training.batch_size
-    };
-
-    // デバイスタイプをコマンドライン引数で指定可能
-    if args.len() >= 5 {
-        match args[4].to_lowercase().as_str() {
-            "cpu" => config.set_device_type(DeviceType::Cpu),
-            "gpu" | "wgpu" => config.set_device_type(DeviceType::Wgpu),
-            _ => println!(
-                "警告: 不明なデバイスタイプ '{}' - 設定ファイルの値を使用します",
-                args[4]
-            ),
-        }
+    if !data_dir.exists() {
+        return Err(anyhow::anyhow!(
+            "データディレクトリが見つかりません: {}",
+            data_dir.display()
+        ));
     }
 
     println!("=================================================================================");
     println!("アイコン分類モデル学習 (Burn)");
     println!("=================================================================================");
     println!("\nデータディレクトリ: {}", data_dir.display());
+    println!("出力先: {}.tar.gz", args.output);
+    println!("エポック数: {}", args.epochs);
+    println!("バッチサイズ: {}", args.batch_size);
+    println!("学習率: {}", args.learning_rate);
+    println!("検証データ割合: {:.1}%", args.val_ratio * 100.0);
 
-    // クラスラベルを自動検出
-    let class_names = IconDataset::detect_classes(&data_dir)?;
+    // ボタンラベルを先に読み込む
+    let button_labels: Vec<String> = if let Some(buttons_str) = &args.buttons {
+        buttons_str.split(',').map(|s| s.trim().to_string()).collect()
+    } else {
+        // buttons.txtから読み込む
+        let buttons_file = data_dir.join("buttons.txt");
+        if buttons_file.exists() {
+            let content = std::fs::read_to_string(&buttons_file)?;
+            content.trim().split(',').map(|s| s.trim().to_string()).collect()
+        } else {
+            // デフォルト: BUTTONLABELSから方向入力とothersを除いたもの
+            BUTTON_LABELS.iter()
+                .filter(|&&label| !label.starts_with("dir_") && label != "empty")
+                .map(|&s| s.to_string())
+                .collect()
+        }
+    };
+
+    println!("\nボタンラベル（CSV/表示順）:");
+    for (i, label) in button_labels.iter().enumerate() {
+        println!("  {}: {}", i, label);
+    }
+
+    // クラス順序を生成: dir_1~9, button_labelsの順
+    let class_names = IconDataset::detect_classes(&data_dir, &button_labels)?;
     let num_classes = class_names.len();
     
-    println!("\n検出されたクラス:");
+    println!("\nモデルのクラス順序:");
     for (i, class_name) in class_names.iter().enumerate() {
         println!("  {}: {}", i, class_name);
     }
 
-    // デバイス設定（設定ファイルの値を使用）
-    let device = match config.device_type {
-        DeviceType::Wgpu => {
-            let dev = burn_wgpu::WgpuDevice::default();
-            println!("使用デバイス: WGPU (GPU) - {:?}", dev);
-            dev
-        }
-        DeviceType::Cpu => {
-            println!("警告: CPU (NdArray) モードは現在このバイナリではサポートされていません");
-            println!("WGPU (GPU) を使用します");
-            let dev = burn_wgpu::WgpuDevice::default();
-            println!("使用デバイス: WGPU (GPU) - {:?}", dev);
-            dev
-        }
-    };
+    // デバイス設定
+    let device = burn_wgpu::WgpuDevice::default();
+    println!("\n使用デバイス: WGPU (GPU) - {:?}", device);
 
     // データセット読み込み
     let dataset = IconDataset::load(&data_dir, &class_names)?;
-    let (dataset_train, dataset_val) = dataset.split(config.training.train_ratio);
+    let (dataset_train, dataset_val) = dataset.split(1.0 - args.val_ratio);
 
     println!("\n学習データ: {} 枚", dataset_train.len());
     println!("検証データ: {} 枚", dataset_val.len());
@@ -449,9 +501,9 @@ fn main() -> anyhow::Result<()> {
 
     // 学習設定
     let training_config = TrainingConfig::new(ModelConfig::new(num_classes), AdamConfig::new())
-        .with_num_epochs(num_epochs)
-        .with_batch_size(batch_size)
-        .with_learning_rate(config.training.learning_rate);
+        .with_num_epochs(args.epochs)
+        .with_batch_size(args.batch_size)
+        .with_learning_rate(args.learning_rate);
 
     println!("\n=== 学習設定 ===");
     println!("エポック数: {}", training_config.num_epochs);
@@ -473,58 +525,58 @@ fn main() -> anyhow::Result<()> {
     // モデルとメタデータを保存
     println!("\n=== モデルを保存中 ===");
     
-    let model_path = std::path::PathBuf::from("models/icon_classifier");
+    let model_path = PathBuf::from(&args.output);
     
     // モデルバイナリを読み込み
     let model_binary = std::fs::read("models/model.mpk")
-        .context("Failed to read compiled model file")?;
+        .context("モデルファイルの読み込みに失敗しました")?;
 
     // 学習データから画像サイズを取得
     let (image_width, image_height) = detect_image_size_from_dataset(&data_dir)?;
     println!("検出された学習データ画像サイズ: {}x{}", image_width, image_height);
-
-    // メタデータを作成（設定と検出値を使用）
-    let button_labels: Vec<String> = BUTTON_LABELS.iter().map(|s| s.to_string()).collect();
+    // メタデータを作成
     let metadata = ModelMetadata::new(
         button_labels,
         image_width,
         image_height,
+        config.button_tile.source_video_width,
+        config.button_tile.source_video_height,
         config.button_tile.x,
         config.button_tile.y,
-        config.button_tile.width,
-        config.button_tile.height,
+        config.button_tile.tile_size,
+        config.button_tile.tile_size,
         config.button_tile.columns_per_row,
         IMAGE_SIZE as u32,  // model_input_size
-        num_epochs as u32,
+        args.epochs as u32,
     );
 
     // Tar.gz形式で保存
     model_storage::save_model_with_metadata(&model_path, &metadata, &model_binary)
-        .context("Failed to save model with metadata")?;
+        .context("モデルとメタデータの保存に失敗しました")?;
 
     let tar_gz_path = model_path.with_extension("tar.gz");
-    println!("✓ モデルを保存しました: {}", tar_gz_path.display());
+    println!("\n✓ モデルを保存しました: {}", tar_gz_path.display());
     println!("\nTar.gzファイル内容:");
-    println!("  metadata.json - メタデータ（ボタン情報、タイル設定など）");
-    println!("  model.bin     - モデルの重み");
+    println!("  metadata.json - メタデータ（ボタン情報、タイル設定、解像度情報）");
+    println!("  model.bin     - 学習済みモデルの重み");
 
     // メタデータを表示
     model_storage::print_metadata_info(&metadata);
 
-    // 設定を更新して保存
-    config.training.num_epochs = num_epochs;
-    config.training.batch_size = batch_size;
-    config.set_model_path(tar_gz_path.to_string_lossy().to_string());
+    println!("\n=== 保存されたメタデータの詳細 ===");
+    println!("ボタンラベル: {:?}", metadata.button_labels);
+    println!("学習データ画像サイズ: {}x{}", metadata.image_width, metadata.image_height);
+    println!("解析対象タイル:");
+    println!("  位置: ({}, {})", metadata.tile_x, metadata.tile_y);
+    println!("  サイズ: {}x{}", metadata.tile_width, metadata.tile_height);
+    println!("  列数: {}", metadata.columns_per_row);
+    println!("モデル入力サイズ: {}x{}", metadata.model_input_size, metadata.model_input_size);
+    println!("学習エポック数: {}", metadata.num_epochs);
 
-    if let Err(e) = config.save_default() {
-        eprintln!("警告: 設定ファイルの保存に失敗しました: {}", e);
-    }
-
-    println!();
-    println!("次のステップ:");
-    println!("  1. モデルを使用してinput_cells_allから新しいデータを収集");
-    println!("  2. training_dataを更新");
-    println!("  3. 再度学習（反復的にデータセット品質を向上）");
+    println!("\n次のステップ:");
+    println!("  1. tar.gzファイルをGUIアプリで読み込み");
+    println!("  2. 動画から入力履歴を自動抽出");
+    println!("  3. 必要に応じてデータ収集と再学習");
 
     Ok(())
 }
