@@ -168,7 +168,7 @@ struct InputEditorApp {
     show_training_window: bool,
     train_data_dir: Option<PathBuf>,
     train_button_labels: Vec<String>,
-    train_button_labels_edit: String,
+    train_selected_button_index: Option<usize>,
     train_epochs: usize,
     train_batch_size: usize,
     train_learning_rate: f64,
@@ -247,7 +247,7 @@ impl Default for InputEditorApp {
             show_training_window: false,
             train_data_dir: None,
             train_button_labels: Vec::new(),
-            train_button_labels_edit: String::new(),
+            train_selected_button_index: None,
             train_epochs: 50,
             train_batch_size: 8,
             train_learning_rate: 0.001,
@@ -332,7 +332,6 @@ impl InputEditorApp {
                 .map_err(|e| format!("buttons.txt保存エラー: {}", e))?;
         }
         
-        self.train_button_labels_edit = self.train_button_labels.join(",");
         Ok(())
     }
     
@@ -1007,7 +1006,7 @@ impl InputEditorApp {
         // tile_x, tile_y = 解析対象の左上座標（継続フレーム数列を除く）
         // tile_width/height = 1セルのサイズ（正方形）
         // columns_per_row = 解析対象列数（方向1 + ボタン5 = 6）
-        use input_analyzer::input_analyzer::InputIndicatorRegion;
+        use input_analyzer::input_history_extractor::InputIndicatorRegion;
         let region = InputIndicatorRegion {
             x: metadata.tile_x,
             y: metadata.tile_y,
@@ -1972,21 +1971,59 @@ impl eframe::App for InputEditorApp {
                     
                     // ボタンラベル編集
                     if !self.train_button_labels.is_empty() {
-                        ui.label("🎮 ボタン順序:");
-                        ui.label("カンマ区切りで編集できます（方向キーとothersは自動除外）");
+                        ui.label("🎮 ボタン順序（↑↓ボタンで並び替え）:");
+                        ui.label("この順序がモデルのクラス順序になります");
                         
-                        ui.horizontal(|ui| {
-                            if ui.text_edit_singleline(&mut self.train_button_labels_edit).changed() {
-                                // 編集内容をリストに反映
-                                self.train_button_labels = self.train_button_labels_edit
-                                    .split(',')
-                                    .map(|s| s.trim().to_string())
-                                    .filter(|s| !s.is_empty())
-                                    .collect();
-                            }
-                        });
+                        egui::ScrollArea::vertical()
+                            .max_height(200.0)
+                            .show(ui, |ui| {
+                                let mut move_up: Option<usize> = None;
+                                let mut move_down: Option<usize> = None;
+                                
+                                for (i, label) in self.train_button_labels.iter().enumerate() {
+                                    ui.horizontal(|ui| {
+                                        // 選択ボタン
+                                        let is_selected = self.train_selected_button_index == Some(i);
+                                        if ui.selectable_label(is_selected, label).clicked() {
+                                            self.train_selected_button_index = Some(i);
+                                        }
+                                        
+                                        // 上へボタン
+                                        if i > 0 && ui.button("↑").clicked() {
+                                            move_up = Some(i);
+                                        }
+                                        
+                                        // 下へボタン
+                                        if i < self.train_button_labels.len() - 1 && ui.button("↓").clicked() {
+                                            move_down = Some(i);
+                                        }
+                                    });
+                                }
+                                
+                                // 移動処理
+                                if let Some(idx) = move_up {
+                                    self.train_button_labels.swap(idx, idx - 1);
+                                    self.train_selected_button_index = Some(idx - 1);
+                                    // buttons.txtに保存
+                                    if let Some(dir) = &self.train_data_dir {
+                                        let buttons_file = dir.join("buttons.txt");
+                                        let content = self.train_button_labels.join(",");
+                                        let _ = std::fs::write(&buttons_file, content);
+                                    }
+                                }
+                                if let Some(idx) = move_down {
+                                    self.train_button_labels.swap(idx, idx + 1);
+                                    self.train_selected_button_index = Some(idx + 1);
+                                    // buttons.txtに保存
+                                    if let Some(dir) = &self.train_data_dir {
+                                        let buttons_file = dir.join("buttons.txt");
+                                        let content = self.train_button_labels.join(",");
+                                        let _ = std::fs::write(&buttons_file, content);
+                                    }
+                                }
+                            });
                         
-                        ui.label(format!("現在のボタン: {}", self.train_button_labels.join(", ")));
+                        ui.label(format!("順序: {}", self.train_button_labels.join(" → ")));
                     }
                     
                     ui.separator();

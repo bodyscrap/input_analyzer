@@ -5,6 +5,18 @@ use anyhow::Result;
 #[cfg(feature = "ml")]
 use std::path::Path;
 
+/// 入力インジケータ領域の設定
+#[cfg(feature = "ml")]
+#[derive(Debug, Clone)]
+pub struct InputIndicatorRegion {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+    pub rows: u32,
+    pub cols: u32,
+}
+
 /// 入力状態（各ボタンの状態）
 #[cfg(feature = "ml")]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,7 +70,7 @@ pub fn update_input_state(state: &mut InputState, class_name: &str) {
 /// 
 /// region には継続フレーム数列を含めない（解析対象のみ）
 #[cfg(feature = "ml")]
-pub fn extract_bottom_row_icons(frame_path: &Path, region: &crate::input_analyzer::InputIndicatorRegion) -> Result<Vec<image::RgbImage>> {
+pub fn extract_bottom_row_icons(frame_path: &Path, region: &InputIndicatorRegion) -> Result<Vec<image::RgbImage>> {
     let img = image::open(frame_path)?;
     
     // 各セルを直接抽出（継続フレーム数列は領域に含まれていない）

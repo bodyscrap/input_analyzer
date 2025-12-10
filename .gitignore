@@ -1,21 +1,23 @@
 # Rust
 /target/
 **/*.rs.bk
+Cargo.lock
 
 # ==================================================
-# 大容量データ（Git LFS等で別途管理）
+# 大容量データ
 # ==================================================
 
 # モデルファイル（学習済みモデル）
-/models/
-*.mpk
-*.pt
-*.pth
-*.ckpt
+/models/*.tar.gz
+/models/*.mpk
+/models/checkpoint/
+/models/train/
+/models/valid/
 
 # トレーニングデータ
-/training_data/
-/training_data_backup*/
+/training_data*/
+!/training_data/README.md
+!/training_data/labels.txt
 
 # 動画ファイル
 /sample_data/*.mp4
@@ -28,22 +30,25 @@
 *.mkv
 *.webm
 
-# テスト出力
-/test_results/
+# 出力ファイル
 /output/
-/temp_*/
+/input_cells*/
+/temp*/
+/test_results/
 
 # ==================================================
 # 画像ファイル
 # ==================================================
 
-# 一般的な画像ファイル（ただしサンプルは除外）
+# 一般的な画像ファイル
 *.png
 *.jpg
 *.jpeg
 *.bmp
 
-# サンプルアイコンは管理対象
+# テンプレート・サンプルは管理対象
+!/templates/**/*.png
+!/templates/**/*.jpg
 !/input_icon_samples/**/*.png
 !/input_icon_samples/**/*.jpg
 
